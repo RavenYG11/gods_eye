@@ -190,22 +190,31 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 - [ ] Klik badge → popover "Metrik sesi berjalan": bitrate, resolusi, FPS **terisi angka** (bukan `–`).
 - [ ] Matikan WiFi ±10 detik → badge **◌ BUFFERING** lalu **↻ MENYAMBUNG ULANG**,
       log mencatat urutan backoff (1s → 2s → 5s → 15s → 30s); nyalakan WiFi → kembali **LIVE**.
-- [ ] **#60/#66 — Anti-buffering:** setelah stream stabil, badge menunjukkan
+- [ ] **#60/#66/#68 — Anti-buffering:** setelah stream stabil, badge menunjukkan
       **● DELAY · ±5 dtk** (BUKAN LIVE — ini disengaja) + strip bawah
       "Anti-buffering aktif — tertinggal ±5 dtk (sengaja, agar gambar tidak tersendat)".
       (#66: offset dijaga NATIF oleh hls.js `liveSyncDuration: 5` — TIDAK ADA
       lagi seek manual per detik; log "Anti-buffering: posisi diset…" pola #60
       sudah dihapus. Buffering berulang + log "stall teratasi" terus-menerus =
       regresi pola #60, laporkan.)
+      (#68: `liveMaxLatencyDuration: Infinity` — player TIDAK PERNAH ditarik
+      mengejar live edge; `emergencyResync` DIHAPUS → penjaga jendela DVR
+      (seek hanya bila posisi hampir kedaluwarsa, target edge−25 dtk).
+      BUKTI UJI: klik badge → popover metrik → "Unduh log playback (JSON)"
+      → biarkan 10+ menit → kolom `gap` (bufEnd−pos) harus TUMBUH/STABIL,
+      bukan menyusut ke nol; TIDAK BOLEH ada siklus buffering berulang.)
 - [ ] **#60 — Deteksi kendaraan:** box muncul di atas kendaraan —
       **BIRU = ke atas, HIJAU = ke bawah**, label "mobil/motor + % + #id"
       (#62: kelas truk DIHAPUS — hanya motor & mobil). Chip kanan-bawah
-      "Deteksi: N fps" (N ≈ 8–15 di laptop). Tombol ◎ mematikan/menyalakan overlay.
-- [ ] **#62 — Anti-kedip:** box TIDAK boleh muncul-hilang sepersekian detik.
-      Uji: amati 1 kendaraan lewat — box mengikuti mulus; bila model sesaat
-      gagal deteksi, box tetap tampil ±0,7 dtk (sedikit redup = posisi terakhir
-      tracker), lalu hilang bila kendaraan benar-benar pergi. Box baru muncul
-      hanya setelah kendaraan terdeteksi 2 frame (tidak pop-in).
+      "Deteksi: N fps · Mms · webgl|wasm" (N = fps RIIL hasil inferensi,
+      M = biaya/putaran worker, provider = bukti GPU dipakai/tidak).
+      Tombol ◎ mematikan/menyalakan overlay.
+- [ ] **#62/#68 — Anti-kedip + prediksi gerak:** box TIDAK boleh muncul-hilang
+      sepersekian detik. Uji: amati 1 kendaraan lewat — box MENGIKUTI MULUS
+      pada frame-rate video (prediksi velocity #68), tidak tertinggal jauh;
+      box sedikit redup = posisi prediksi (bukan deteksi segar), lalu hilang
+      bila kendaraan benar-benar pergi. (#67: box langsung muncul sejak
+      deteksi pertama — syarat "2 frame" #62 sudah dicabut atas permintaan Rama.)
 - [ ] **#62/#66 — Layout:** di 1366×768 dan 1920×1080, seluruh player terlihat
       TANPA scroll/maximize. (#66: lebar player mengikuti LEBAR kontainer
       (`width:100%` + `main` max-width 1440px), TINGGI dibatasi
@@ -214,10 +223,19 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
       yang boleh berubah hanya tinggi maksimal (video letterbox tipis bila
       viewport sangat pendek — dapat diterima). Fullscreen: player mengisi
       penuh viewport tanpa terpotong.)
-- [ ] **#62 — Slider threshold:** pojok kanan bawah player ada kontrol
-      "Threshold 0.50" + slider 0,10–0,90. Geser → nilai berubah, box
-      bertambah/berkurang mulai frame berikutnya TANPA reload. Naikkan bila
-      box palsu; turunkan bila kendaraan jauh tak terdeteksi.
+- [ ] **#62/#68 — Slider threshold:** pojok kanan bawah player ada kontrol
+      "Threshold 0.40" + slider 0,10–0,90. Geser → nilai berubah, box
+      bertambah/berkurang mulai frame berikutnya TANPA reload. (#68: default
+      0,5→0,4 — kendaraan jelas di CCTV malam skor 51–54%, nyaris gugur di
+      0,5.) Naikkan bila box palsu; turunkan bila kendaraan jauh tak terdeteksi.
+- [ ] **#69 — Kontrol playback:** tombol ▶/❚❚ di kiri tombol deteksi — klik
+      → video jeda (ikon jadi ▶ + aksen hijau), klik lagi → lanjut. Klik
+      video juga toggle. Chip kiri bawah menampilkan "−N dtk dari live"
+      (atau "● live" bila ≤3 dtk) + "dijeda ·" saat pause. Progress bar
+      tipis di atas tepi bawah menunjukkan posisi play dalam jendela DVR.
+      Saat dijeda: box deteksi BEKU di posisi terakhir (tidak jalan sendiri).
+      Jeda 3+ menit lalu resume → lanjut mulus TANPA buffering berulang
+      (penjaga DVR #68). 
 - [ ] Pagar scope tetap: **tanpa tombol record**, tanpa face recognition.
       (Panel deteksi kini ADA — larangan dicabut Rama 15 Okt 2026 14:37 WIB.)
 

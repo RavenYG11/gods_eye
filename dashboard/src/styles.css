@@ -231,6 +231,36 @@ footer .mono{font-family:var(--mono)}
 #detBtn:hover{background:rgba(20,26,40,.85);color:var(--text)}
 #detBtn.on{color:var(--green);border-color:rgba(74,222,128,.45)}
 
+/* #69: tombol putar/jeda — di kiri tombol deteksi. Saat dijeda, ikon ▶
+   diberi aksen hijau agar statusnya terbaca sekilas. */
+#playBtn{position:absolute;bottom:12px;right:100px;z-index:6;width:36px;height:36px;
+        border-radius:8px;border:1px solid var(--line);background:rgba(5,8,14,.65);
+        color:var(--text);font-size:14px;display:flex;align-items:center;justify-content:center}
+#playBtn:hover{background:rgba(20,26,40,.85)}
+#playBtn.is-paused{color:var(--green);border-color:rgba(74,222,128,.45)}
+
+/* #69: chip waktu — offset dari live edge ("durasi" yang bermakna untuk
+   LIVE HLS). Posisi: kiri bawah, sejajar barisan tombol. */
+.play-time{position:absolute;bottom:12px;left:12px;z-index:6;font-size:11px;
+          font-family:var(--mono);color:var(--text);background:rgba(5,8,14,.72);
+          border:1px solid var(--line);border-radius:6px;padding:8px 10px;
+          backdrop-filter:blur(4px);pointer-events:none;white-space:nowrap}
+.play-time.paused{color:var(--orange);border-color:rgba(251,146,60,.45);font-weight:700}
+.play-time.live{color:var(--green);border-color:rgba(74,222,128,.35)}
+.play-time.behind{color:var(--text)}
+
+/* #69: progress bar jendela DVR — strip tipis di atas chip waktu.
+   Bar = jendela DVR [windowStart..liveEdge]; penanda putih = posisi play.
+   Lebar dibatasi 200px agar tidak tertutup chip deteksi (kanan bawah).
+   Indikator saja (live, bukan scrubber). */
+.dvr-bar{position:absolute;left:12px;width:200px;bottom:54px;z-index:5;
+         pointer-events:none}
+.dvr-track{position:relative;height:4px;border-radius:2px;
+           background:rgba(56,189,248,.25)}
+.dvr-pos{position:absolute;top:50%;width:8px;height:8px;border-radius:50%;
+         background:#fff;transform:translate(-50%,-50%);
+         box-shadow:0 0 6px rgba(255,255,255,.6)}
+
 /* chip status deteksi — pojok kanan bawah, di atas strip delay */
 .det-chip{position:absolute;bottom:56px;right:12px;z-index:6;font-size:11px;
           font-family:var(--mono);color:var(--text);background:rgba(5,8,14,.72);
