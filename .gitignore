@@ -1,0 +1,9 @@
+# Rujukan: docs/arsitektur.md §5 butir 3 — bobot model tidak di-commit.
+node_modules/
+dashboard/dist/
+dashboard/node_modules/.tmp/
+*.onnx
+*.pt
+*.bin
+*.pkl
+.DS_Store
