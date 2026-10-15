@@ -16,6 +16,7 @@ import Hls, {
   type ManifestParsedData,
 } from "hls.js";
 import type { CameraConfig } from "../config/cameras";
+import { getStreamUrl } from "../config/cameras";
 import { makeLogEntry, type LogEntry, type LogLevel } from "./log";
 
 export type StreamStatus =
@@ -202,6 +203,10 @@ export class StreamHealth {
     const camera = this.camera;
     if (!video || !camera) return;
 
+    // Fix bug CORS #58: URL efektif — proksi /cctv/* saat DEV, URL absolut
+    // saat PROD. Definisi tunggal di config/cameras.ts.
+    const streamUrl = getStreamUrl(camera);
+
     if (this.hls) {
       this.hls.destroy();
       this.hls = null;
@@ -215,7 +220,7 @@ export class StreamHealth {
           "warn",
           "Browser memakai HLS native — sebagian event detail tidak tersedia.",
         );
-        video.src = camera.streamUrl;
+        video.src = streamUrl;
         video.play().catch(() => undefined);
         this.bindNativeEvents(video);
         this.setStatus("loading");
@@ -294,7 +299,7 @@ export class StreamHealth {
       this.emit();
     });
 
-    hls.loadSource(camera.streamUrl);
+    hls.loadSource(streamUrl);
     hls.attachMedia(video);
   }
 
