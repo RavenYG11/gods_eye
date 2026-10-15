@@ -190,10 +190,13 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 - [ ] Klik badge → popover "Metrik sesi berjalan": bitrate, resolusi, FPS **terisi angka** (bukan `–`).
 - [ ] Matikan WiFi ±10 detik → badge **◌ BUFFERING** lalu **↻ MENYAMBUNG ULANG**,
       log mencatat urutan backoff (1s → 2s → 5s → 15s → 30s); nyalakan WiFi → kembali **LIVE**.
-- [ ] **#60 — Anti-buffering:** setelah stream stabil, badge menunjukkan
+- [ ] **#60/#66 — Anti-buffering:** setelah stream stabil, badge menunjukkan
       **● DELAY · ±5 dtk** (BUKAN LIVE — ini disengaja) + strip bawah
       "Anti-buffering aktif — tertinggal ±5 dtk (sengaja, agar gambar tidak tersendat)".
-      Log koneksi mencatat "Anti-buffering: posisi diset 5 dtk di belakang live edge".
+      (#66: offset dijaga NATIF oleh hls.js `liveSyncDuration: 5` — TIDAK ADA
+      lagi seek manual per detik; log "Anti-buffering: posisi diset…" pola #60
+      sudah dihapus. Buffering berulang + log "stall teratasi" terus-menerus =
+      regresi pola #60, laporkan.)
 - [ ] **#60 — Deteksi kendaraan:** box muncul di atas kendaraan —
       **BIRU = ke atas, HIJAU = ke bawah**, label "mobil/motor + % + #id"
       (#62: kelas truk DIHAPUS — hanya motor & mobil). Chip kanan-bawah
@@ -203,8 +206,14 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
       gagal deteksi, box tetap tampil ±0,7 dtk (sedikit redup = posisi terakhir
       tracker), lalu hilang bila kendaraan benar-benar pergi. Box baru muncul
       hanya setelah kendaraan terdeteksi 2 frame (tidak pop-in).
-- [ ] **#62 — Layout:** di 1366×768 dan 1920×1080, seluruh player 16:9 terlihat
-      TANPA scroll/maximize (lebar otomatis menyesuaikan tinggi viewport).
+- [ ] **#62/#66 — Layout:** di 1366×768 dan 1920×1080, seluruh player terlihat
+      TANPA scroll/maximize. (#66: lebar player mengikuti LEBAR kontainer
+      (`width:100%` + `main` max-width 1440px), TINGGI dibatasi
+      `max-height:calc(100vh−120px)` — bukan lagi `min(100%,(100vh−200px)×16/9)`.
+      Buka DevTools (docked): card TIDAK boleh menyusut melebar-menyempit;
+      yang boleh berubah hanya tinggi maksimal (video letterbox tipis bila
+      viewport sangat pendek — dapat diterima). Fullscreen: player mengisi
+      penuh viewport tanpa terpotong.)
 - [ ] **#62 — Slider threshold:** pojok kanan bawah player ada kontrol
       "Threshold 0.50" + slider 0,10–0,90. Geser → nilai berubah, box
       bertambah/berkurang mulai frame berikutnya TANPA reload. Naikkan bila
@@ -345,6 +354,22 @@ gods_eye/
   17 unit test logika lolos; model asli [1,300,6] terkonfirmasi via ORT;
   headless Chromium: render tanpa JS error, worker+model+wasm termuat, chip "Deteksi" tampil,
   toggle on/off OK. ⚠️ **Stream + akurasi deteksi WAJIB verifikasi Rama di laptop.** |
+| 66 | Gunet | **BUGFIX — JANGAN PUSH** (workflow mengikat: build → lapor Rama → push bila setuju).
+  Laporan Rama 19:22 WIB: (1) buffering 80% padahal URL asli lancar, (2) player kurang
+  lebar, (3) card menyusut saat DevTools dibuka. Diagnosis: (1) DUA akar — (a) seek manual
+  `applyIntentionalDelay` (#60) tiap detik berkelahi dengan buffer hls.js → siklus
+  seek/rebuffer; offset ±5 dtk dialihkan ke NATIF hls.js (`liveSyncDuration: 5`,
+  `liveMaxLatencyDuration: 30`, `maxLiveSyncPlaybackRate: 1`; `tickDelay()` kini murni
+  mengukur; seek darurat hanya `emergencyResync()` bila drift > 60 dtk); (b) proksi
+  `/cctv/*` tanpa `agent` → http-proxy memaksa `Connection: close` → tiap .ts membayar
+  handshake TLS + slow-start baru (akar ".ts 841KB makan 2–3 dtk"); diperbaiki via
+  `https.Agent({keepAlive:true})` eksplisit. (2) Formula `#62`
+  (`min(100%,(100vh−200px)×16/9)`) diganti `width:100%` + `aspect-ratio:16/9` +
+  `max-height:calc(100vh−120px)` (cadangan 200px over-konservatif; 120px = header ±58 +
+  padding 20 + napas ±42) + `main` max-width 1120→1440px. (3) Lebar tak lagi digantungkan
+  ke tinggi viewport → DevTools tak bisa menyusutkan card; `:fullscreen` dikecualikan
+  dari max-height. Terverifikasi VM: `npm run build` (tsc + vite) bersih,
+  `node --check` backend OK. ⚠️ **Verifikasi kelancaran stream + layout WAJIB di laptop Rama.** |
 
 Berikutnya (sesuai urutan Meeting #4): Rama pilih hasil benchmark model i5 →
 pencabutan larangan detection → fase deteksi (arsitektur ulang + audit Cipher fokus model & UU PDP).

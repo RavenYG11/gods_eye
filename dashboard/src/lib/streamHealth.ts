@@ -64,16 +64,24 @@ const LIVE_THRESHOLD_SEC = 3;
 /**
  * ANTI-BUFFERING — intentional delay (#60, temuan Rama 15 Okt 2026):
  * web resmi CCTV Bekasi tidak kelihatan buffering karena stream-nya SENGAJA
- * di-delay beberapa detik di belakang live edge (bukti: seret playhead ke
- * posisi terbaru → buffering langsung muncul). Kita tiru trik itu: player
- * dijaga ~5 dtk di belakang live edge. Ditampilkan JUJUR di UI (strip delay
- * "±5 dtk") — bukan disembunyikan.
+ * di-delay beberapa detik di belakang live edge. Kita tiru trik itu.
+ *
+ * #66 (15 Okt 2026) — KOREKSI IMPLEMENTASI: pola #60 (seek manual
+ * video.currentTime tiap detik via applyIntentionalDelay) TERBUKTI menjadi
+ * akar buffering 80%: tiap seek menginvalidasi buffer internal hls.js →
+ * siklus rebuffer tanpa henti. Mulai #66, offset ±5 dtk dijaga NATIF oleh
+ * hls.js (liveSyncDuration: 5, liveMaxLatencyDuration: 30,
+ * maxLiveSyncPlaybackRate: 1) — halus, tanpa seek brutal. Delay tampil
+ * diukur real-time tiap detik (delaySec) untuk strip/badge yang jujur.
  */
-const INTENTIONAL_DELAY_SEC = 5;
-/** Bila offset menyusut di bawah ini (hanyut ke live edge), dorong balik. */
-const DELAY_NUDGE_FLOOR_SEC = 2;
-/** Cooldown antar dorongan balik (ms) agar tidak seek berulang. */
-const DELAY_NUDGE_COOLDOWN_MS = 10_000;
+/**
+ * #66: ambang DARURAT — hanya bila player tertinggal lebih dari ini dari
+ * live edge, lakukan emergencyResync() (seek sekali ke posisi aman).
+ * Drift normal sepenuhnya urusan hls.js.
+ */
+const EXTREME_DRIFT_SEC = 60;
+/** Offset posisi aman untuk emergency resync (selaras liveSyncDuration: 5). */
+const EMERGENCY_RESYNC_OFFSET_SEC = 6;
 /** Stall > 10 dtk + multi-bitrate → turunkan kualitas dulu (§4 butir 4). */
 const STALL_DOWNGRADE_MS = 10_000;
 /** Interval pemeriksaan latar saat OFFLINE (mockup: "pemeriksaan otomatis
@@ -115,7 +123,6 @@ export class StreamHealth {
   private prevFrames = 0;
   private prevFramesAt = 0;
   private nativeHls = false;
-  private lastDelayNudgeAt = 0;
 
   /**
    * Sinyal "player nunggu data" yang jujur: event 'waiting' milik <video>.
@@ -253,9 +260,26 @@ export class StreamHealth {
       levelLoadingRetryDelay: 2000,
       fragLoadingMaxRetry: 4,
       fragLoadingRetryDelay: 2000,
+      // #66: maxBufferLength 30 dtk dipertahankan — untuk LIVE, buffer maju
+      // memang dibatasi live edge (cushion ±5 dtk, lihat bawah); angka lebih
+      // besar tidak menambah ketahanan jitter. Jitter ditangani di (a)
+      // keep-alive proksi dan (b) tanpa seek manual.
       maxBufferLength: 30,
+      // #66: offset anti-buffering ±5 dtk DITANGANI NATIF oleh hls.js —
+      // BUKAN via seek manual. Seek manual tiap detik (pola #60) berkelahi
+      // dengan manajemen buffer internal hls.js: tiap seek menginvalidasi
+      // buffer → siklus rebuffer = buffering 80% (laporan Rama).
+      // liveSyncDuration: 5 → hls.js menargetkan posisi TEPAT 5 dtk di
+      // belakang live edge (detik, bukan kelipatan durasi segmen — presisi,
+      // selaras janji strip "±5 dtk"). Diverifikasi di hls.js 1.7.3
+      // (latency-controller: targetLatency = liveSyncDuration bila di-set).
+      liveSyncDuration: 5,
+      // #66: PENGAMAN NATIF — hls.js hanya menarik maju ke liveSyncPosition
+      // bila tertinggal > 30 dtk (default = 3× durasi segmen ≈ 6–9 dtk, itu
+      // terlalu agresif: tiap stall sedang langsung "ditarik" ke live edge =
+      // buffering yang justru ingin dihindari trik delay ini).
+      liveMaxLatencyDuration: 30,
       // #60 anti-buffering: JANGAN kejar live edge dengan mempercepat playback.
-      // Offset ~5 dtk dijaga manual (applyIntentionalDelay) agar stabil.
       maxLiveSyncPlaybackRate: 1,
     });
     this.hls = hls;
@@ -274,8 +298,10 @@ export class StreamHealth {
           `Terhubung — manifest dimuat (${levels} level kualitas tersedia).`,
         );
       }
-      // #60: mulai (dan tiap reconnect) langsung di posisi liveEdge − 5 dtk.
-      this.applyIntentionalDelay("start");
+      // #66: TIDAK ADA seek manual saat start — hls.js dengan
+      // liveSyncDuration: 5 otomatis mulai 5 dtk di belakang live edge.
+      // Seek manual di sini (pola #60) mengganggu stabilisasi buffer
+      // awal dan memicu rebuffer.
       this.setStatus("live");
       video.play().catch(() => {
         this.pushLog(
@@ -486,13 +512,16 @@ export class StreamHealth {
     if (video.currentTime <= 0) return;
     const delay = Math.max(0, edge - video.currentTime);
 
-    // #60: pertahankan offset anti-buffering —
-    //  - hanyut terlalu dekat ke live edge (< 2 dtk) → dorong balik ke −5 dtk
-    //    (terlalu dekat = risiko buffering, ini inti trik Bekasi);
-    //  - tertinggal terlalu jauh (> 15 dtk, mis. setelah stall panjang) →
-    //    lompat maju ke −5 dtk (strip berjanji "±5 dtk" — tepati).
-    if (delay < DELAY_NUDGE_FLOOR_SEC || delay > INTENTIONAL_DELAY_SEC * 3) {
-      this.applyIntentionalDelay("nudge");
+    // #66 (15 Okt 2026): seek manual "nudge" DIHAPUS. Pola #60 (seek tiap
+    // kali delay < 2 dtk atau > 15 dtk) adalah akar buffering 80%: tiap seek
+    // menginvalidasi buffer internal hls.js → siklus rebuffer tanpa henti.
+    // Offset anti-buffering kini dijaga NATIF oleh hls.js
+    // (liveSyncDuration: 5, liveMaxLatencyDuration: 30). Satu-satunya seek
+    // yang tersisa: darurat > 60 dtk tertinggal (mis. setelah stall sangat
+    // panjang) → lompat ke posisi aman. Ini jarang terjadi dan tidak
+    // mengganggu operasi normal.
+    if (delay > EXTREME_DRIFT_SEC) {
+      this.emergencyResync();
       return;
     }
 
@@ -509,35 +538,29 @@ export class StreamHealth {
   }
 
   /**
-   * #60 anti-buffering: set posisi play ke (liveEdge − 5 dtk).
-   * Dipanggil saat start/reconnect ("start") dan saat offset menyusut
-   * ("nudge", dibatasi cooldown). Reconnect logic existing tidak diubah —
-   * fungsi ini hanya menggeser posisi setelah stream tersambung.
+   * #66 (15 Okt 2026): PENGGANTI applyIntentionalDelay. Seek DARURAT saja —
+   * dipanggil hanya bila player tertinggal > EXTREME_DRIFT_SEC dari live edge
+   * (mis. setelah stall sangat panjang). Melompat ke posisi aman
+   * (liveEdge − 6 dtk, selaras liveSyncDuration: 5). TIDAK dipanggil
+   * untuk drift normal — itu urusan hls.js.
    */
-  private applyIntentionalDelay(reason: "start" | "nudge"): void {
+  private emergencyResync(): void {
     const hls = this.hls;
     const video = this.video;
     if (!hls || !video) return;
     const edge = hls.liveSyncPosition;
     if (typeof edge !== "number" || !Number.isFinite(edge) || edge <= 0) return;
 
-    const target = Math.max(0, edge - INTENTIONAL_DELAY_SEC);
-    const gap = Math.abs(video.currentTime - target);
-    if (reason === "start" && gap < 1.5) return; // sudah di posisi benar
-    if (reason === "nudge") {
-      const now = Date.now();
-      if (now - this.lastDelayNudgeAt < DELAY_NUDGE_COOLDOWN_MS) return;
-      this.lastDelayNudgeAt = now;
-    }
+    const target = Math.max(0, edge - EMERGENCY_RESYNC_OFFSET_SEC);
     try {
       video.currentTime = target;
       this.pushLog(
-        "info",
-        `Anti-buffering: posisi diset ${INTENTIONAL_DELAY_SEC} dtk di belakang ` +
-          `live edge (trik web resmi Bekasi — delay tampil jujur di strip bawah).`,
+        "warn",
+        `Resync darurat: tertinggal > ${EXTREME_DRIFT_SEC} dtk, lompat ke ` +
+          `posisi aman (${EMERGENCY_RESYNC_OFFSET_SEC} dtk di belakang live edge).`,
       );
     } catch {
-      // seek gagal (mis. belum ada buffer) — biarkan hls.js yang mengatur.
+      // seek gagal — biarkan hls.js yang mengatur.
     }
   }
 

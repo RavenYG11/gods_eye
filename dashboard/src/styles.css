@@ -38,19 +38,36 @@ header{display:flex;align-items:center;justify-content:space-between;
 #clock{font-family:var(--mono);font-size:13px;color:var(--text);white-space:nowrap}
 #clock small{color:var(--muted);font-size:11px;display:block;text-align:right}
 
-main{flex:1;width:100%;max-width:1120px;margin:0 auto;padding:20px 16px 40px;
+main{flex:1;width:100%;max-width:1440px;margin:0 auto;padding:20px 16px 40px;
      display:flex;flex-direction:column;gap:16px}
 
 /* ---------- player 16:9 ---------- */
 /* #62 (15 Okt 2026): player TIDAK boleh lebih tinggi dari viewport — Rama
-   harus scroll/maximize sebelumnya. Lebar = min(100%, tinggi-tersedia × 16/9)
-   sehingga tinggi player selalu muat tanpa scroll di 1366×768 maupun
-   1920×1080; aspect-ratio tetap 16:9 (tidak ada distorsi). Fullscreen
-   dikecualikan (di sana player = viewport itu sendiri). */
-.player{position:relative;width:min(100%,calc((100vh - 200px) * 16 / 9));
-        margin:0 auto;aspect-ratio:16/9;background:#000;
+   harus scroll/maximize sebelumnya. Fullscreen dikecualikan (di sana
+   player = viewport itu sendiri).
+   #66 (15 Okt 2026) — perombakan formula lebar (laporan Rama: (2) player
+   kurang lebar, (3) card menyusut saat DevTools dibuka):
+   - SEBELUM: width = min(100%, (100vh − 200px) × 16/9) — lebar digantungkan
+     LANGSUNG ke tinggi viewport. Dua masalah: (a) cadangan 200px terlalu
+     besar (header ±58px + padding main 20px + napas ±40px ≈ 120px cukup) →
+     player dikecilkan sia-sia → space kosong kiri-kanan; (b) DevTools
+     (docked) mengurangi tinggi viewport → lebar ikut menyusut.
+   - SESUDAH: width: 100% (mengikuti LEBAR kontainer — stabil, tidak peduli
+     DevTools) + aspect-ratio: 16/9 + max-height: calc(100vh − 120px)
+     (constraint #62 tetap: card tidak pernah memaksa scroll; 120px =
+     header sticky ±58 + padding-top main 20 + napas ±42).
+   - Tradeoff jujur: bila max-height mengikat (viewport pendek), video
+     letterbox tipis di dalam card full-width (object-fit: contain sudah
+     menangani) — card TIDAK menyusut, layout stabil.
+   - main max-width 1120px → 1440px: di layar lebar, player memanfaatkan
+     ruang horizontal (bukan sekadar kontainer lama yang sempit). */
+.player{position:relative;width:100%;aspect-ratio:16/9;
+        max-height:calc(100vh - 120px);
+        margin:0 auto;background:#000;
         border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
-.player:fullscreen{width:100%}
+/* #66: fullscreen = viewport itu sendiri → max-height constraint #62
+   TIDAK berlaku di sini (tanpanya tinggi player terpotong 120px). */
+.player:fullscreen{width:100%;max-height:none}
 .player video.feed{position:absolute;inset:0;width:100%;height:100%;display:block;
                    object-fit:contain;background:#000}
 .vignette{position:absolute;inset:0;pointer-events:none;

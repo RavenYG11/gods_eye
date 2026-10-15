@@ -8,7 +8,7 @@ GODS EYE **fullstack**: browser hanya bicara ke satu origin, sehingga masalah
 
 | Path | Tujuan |
 |---|---|
-| `GET /cctv/*` | **Reverse proxy** → `https://eofficev2.bekasikota.go.id/*` (prefix `/cctv` dibuang). Meneruskan request HLS apa adanya: `.m3u8`, segmen `.ts`, dll. |
+| `GET /cctv/*` | **Reverse proxy** → `https://eofficev2.bekasikota.go.id/*` (prefix `/cctv` dibuang). Meneruskan request HLS apa adanya: `.m3u8`, segmen `.ts`, dll. **Keep-alive ke upstream WAJIB (#66):** `https.Agent({ keepAlive: true })` — tanpa ini http-proxy memaksa `Connection: close` + agent:false sehingga tiap segmen .ts membayar handshake TLS + slow-start baru (terbukti: .ts ±841KB makan 2–3 dtk via proksi). |
 | `GET /api/health` | Health check JSON (`ok`, `upstream`, `frontendBuilt`). |
 | `GET /*` (lainnya) | File statis dari `../dashboard/dist` (hasil build frontend) + fallback `index.html`. |
 

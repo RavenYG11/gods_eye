@@ -21,6 +21,7 @@
 
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import https from "node:https";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -61,6 +62,17 @@ app.use(
     changeOrigin: true, // Host header disesuaikan ke upstream
     pathRewrite: { "^/cctv": "" }, // buang prefix /cctv
     logLevel: "warn",
+    // #66 (15 Okt 2026) — AKAR BUFFERING (a): tanpa `agent` eksplisit,
+    // http-proxy mengirim tiap request upstream dengan `Connection: close`
+    // + agent:false → SETIAP poll .m3u8 (±2–4 dtk) dan SETIAP segmen .ts
+    // membayar handshake TCP+TLS baru + slow-start dari nol. Itulah kenapa
+    // .ts ±841KB makan 2–3 dtk via proksi padahal URL asli (koneksi
+    // keep-alive) lancar. Dengan https.Agent keep-alive, koneksi ke upstream
+    // dipakai ulang → handshake & slow-start hanya sekali.
+    // (Diverifikasi di node_modules/http-proxy/lib/http-proxy/common.js:
+    //  `outgoing.agent = options.agent || false`, lalu `Connection: close`
+    //  dipaksa bila agent falsy.)
+    agent: new https.Agent({ keepAlive: true, keepAliveMsecs: 30_000 }),
   }),
 );
 
