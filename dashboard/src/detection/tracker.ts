@@ -39,8 +39,9 @@ export interface TrackerOptions {
   historyLen: number;
   /**
    * #62: masa tenggang render — track yang tak terdeteksi frame ini TETAP
-   * dirender (posisi terakhir) selama missed ≤ graceFrames. 7 frame ≈ 0,7 dtk
-   * pada CAPTURE_FPS=10 — dalam rentang 0,5–1 dtk yang diminta Rama.
+   * dirender (posisi terakhir) selama missed ≤ graceFrames. 7 frame inferensi
+   * ≈ 1,6 dtk pada fps aktual ±4,3 (asumsi awal 0,7 dtk pada CAPTURE_FPS=10
+   * tidak tercapai di laptop Rama — model WASM ±230ms/inferensi).
    */
   graceFrames: number;
   /** #62: track dirender hanya bila sudah terlihat ≥ N frame (terkonfirmasi). */
@@ -50,13 +51,30 @@ export interface TrackerOptions {
 }
 
 export const DEFAULT_TRACKER_OPTIONS: TrackerOptions = {
-  maxDistPx: 90, // ASUMSI: pada 1920×1080 & 10fps, kendaraan tak lompat >90px/frame
-  ttlFrames: 10, // ≈1 dtk tak terlihat → dianggap pergi
+  /**
+   * #67 (15 Okt 2026): 90 → 200. ASUMSI LAMA "10fps" SALAH — inferensi aktual
+   * di laptop Rama hanya ±4,3 fps (model WASM ±230ms), sehingga kendaraan
+   * bergerak ±2,3× LEBIH JAUH antar-frame inferensi dibanding asumsi 10fps.
+   * Dengan 90px, kendaraan cepat TIDAK PERNAH cocok ke track lama → track
+   * baru tiap frame → seen=1 terus → tidak pernah dirender (butuh 2) →
+   * "box jarang muncul". 200px = 90 × 2,3 (faktor koreksi fps), masih aman
+   * karena label harus sama (mobil≠motor) + greedy dari confidence tertinggi.
+   */
+  maxDistPx: 200,
+  ttlFrames: 10, // ≈2,3 dtk tak terlihat pada 4,3fps → dianggap pergi
   minDyPx: 8, // di bawah ini = getaran centroid, bukan gerak nyata
   minSeenForDirection: 3, // cegah arah ngaco dari 1–2 frame
   historyLen: 8,
   graceFrames: 7, // #62: box bertahan ±0,7 dtk setelah deteksi hilang
-  minSeenToRender: 2, // #62: cegah pop-in dari 1 deteksi sesaat
+  /**
+   * #67 (15 Okt 2026): 2 → 1. Permintaan eksplisit Rama: "ketika muncul di
+   * kamera, box bisa langsung muncul ga?" → YA. Track dirender sejak deteksi
+   * PERTAMA, tanpa menunggu konfirmasi frame kedua. Tradeoff jujur: box dari
+   * 1 deteksi sesaat (false positive) kini ikut tampil — tapi graceFrames
+   * tetap menstabilkan, dan Rama bisa menaikkan threshold via slider bila
+   * box palsu mengganggu.
+   */
+  minSeenToRender: 1,
   smoothAlpha: 0.65, // #62: EMA — 65% posisi baru, 35% posisi lama
 };
 
