@@ -1,20 +1,33 @@
 // Rujukan: docs/arsitektur.md §2
-// ★ KONTRAK SAJA — tidak ada file model, tidak ada bobot, tidak ada kode
-// inferensi di v0.1. Modul ini hanya mendefinisikan BENTUK data dan BENTUK
-// interface, supaya dashboard "detection-ready" (agnostik-model).
+// v0.1: modul ini hanya KONTRAK (detection-ready, agnostik-model).
+// #60 (15 Okt 2026): larangan deteksi DICABUT Rama — modul ini sekarang berisi
+// implementasi nyata YOLO26n via kontrak Detector/DetectionPort di bawah.
+// Bobot model TIDAK di-commit (diunduh terpisah — lihat scripts/unduh-model.*).
 //
 // Skema JSON Broto (beku):
 //   camera_id → cameraId · frame_pts → framePts · wall_time → wallTime/timestamp
 //   conf → confidence · bbox_xywh → bbox
 
+/**
+ * Arah gerak kendaraan antar-frame, dari delta y centroid (tracker.ts).
+ * "atas" = centroid bergerak ke atas frame · "bawah" = ke bawah frame.
+ * "unknown" = belum cukup data gerak (belum bisa diklasifikasi).
+ */
+export type VehicleDirection = "atas" | "bawah" | "unknown";
+
 /** Satu kotak deteksi — selaras dengan skema JSON Broto (beku). */
 export interface Detection {
   classId: number; // ← class_id (Broto)
-  label: string; // ← label, mis. "mobil", "motor", "orang"
+  label: string; // ← label: "motor" | "mobil" | "truk kecil" | "truk besar"
   confidence: number; // ← conf, 0..1
   bbox: [number, number, number, number]; // ← bbox_xywh: [x, y, w, h] piksel
   trackId?: number; // opsional — diisi tracker bila ada
   timestamp: number; // ← wall_time, epoch ms
+  /**
+   * EKSTENSI UI (bukan bagian skema Broto — tidak diserialisasi ke JSON).
+   * Dipakai overlay untuk warna box: BIRU = "atas", HIJAU = "bawah".
+   */
+  direction?: VehicleDirection;
 }
 
 /** Satu frame hasil deteksi. */

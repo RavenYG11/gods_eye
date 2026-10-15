@@ -3,11 +3,13 @@
 // Rujukan perilaku: docs/arsitektur.md §4. TIDAK ada panel simulasi —
 // semua state di sini berasal dari event nyata hls.js via StreamHealth.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CameraConfig } from "../config/cameras";
 import { formatJamWIB } from "../lib/log";
 import type { StreamSession } from "../lib/useStreamSession";
+import { useDetection } from "../lib/useDetection";
 import { StreamHealthBadge } from "./StreamHealthBadge";
+import { DetectionOverlay } from "./DetectionOverlay";
 
 interface Props {
   session: StreamSession;
@@ -25,8 +27,25 @@ export function StreamPlayer({ session, camera }: Props) {
   const { snap, attachVideo, retry } = session;
   const { status, metrics } = snap;
   const playerRef = useRef<HTMLElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [clock, setClock] = useState(() => formatJamWIB(Date.now()));
+
+  // Ref callback STABIL (useCallback): inline arrow di prop `ref` dibuat
+  // ulang tiap render → React detach/attach ulang → engine.attach() tiap
+  // render → setStatus → re-render = INFINITE LOOP (temuan uji headless #60).
+  const setVideoRefs = useCallback(
+    (el: HTMLVideoElement | null) => {
+      attachVideo(el);
+      videoRef.current = el;
+    },
+    [attachVideo],
+  );
+
+  // #60: deteksi kendaraan (YOLO26n, worker) — overlay di atas video.
+  const detection = useDetection(() => videoRef.current);
+  const detVisible =
+    detection.enabled && detection.status === "ready";
 
   // Jam WIB header OSD — tick tiap detik.
   useEffect(() => {
@@ -89,7 +108,7 @@ export function StreamPlayer({ session, camera }: Props) {
     >
       {/* muted: stream CCTV tanpa audio; autoplay policy browser. */}
       <video
-        ref={attachVideo}
+        ref={setVideoRefs}
         className="feed"
         muted
         playsInline
@@ -100,6 +119,13 @@ export function StreamPlayer({ session, camera }: Props) {
         }}
       />
       <div className="vignette" aria-hidden="true" />
+
+      {/* #60: overlay box kendaraan (canvas) — di atas video, di bawah badge. */}
+      <DetectionOverlay
+        getVideo={() => videoRef.current}
+        detections={detection.detections}
+        visible={detVisible}
+      />
 
       {status === "loading" && (
         <div className="shimmer show" aria-hidden="true" />
@@ -203,7 +229,9 @@ export function StreamPlayer({ session, camera }: Props) {
         </div>
       )}
 
-      {/* Strip delay non-blocking — jujur soal keterlambatan (§4). */}
+      {/* Strip delay non-blocking — JUJUR soal keterlambatan (§4, #60).
+          Player SENGAJA dijaga ~5 dtk di belakang live edge (anti-buffering,
+          trik web resmi Bekasi) — strip ini menjelaskannya, bukan menyembunyikannya. */}
       <div
         id="delayStrip"
         className={status === "delay" ? "show" : ""}
@@ -211,12 +239,55 @@ export function StreamPlayer({ session, camera }: Props) {
       >
         {status === "delay" && (
           <>
-            Tertinggal <strong>±{snap.delaySec} dtk</strong> dari siaran
-            langsung — menampilkan data terakhir yang diterima.
+            Anti-buffering aktif — tertinggal{" "}
+            <strong>±{snap.delaySec} dtk</strong> dari siaran langsung (sengaja,
+            agar gambar tidak tersendat).
           </>
         )}
       </div>
 
+      {/* #60: status model deteksi (ringkas, tak menutupi video). */}
+      {detection.enabled && detection.status === "loading" && (
+        <div className="det-chip" role="status">
+          Memuat model deteksi…
+        </div>
+      )}
+      {detection.enabled && detection.status === "error" && (
+        <button
+          type="button"
+          className="det-chip error"
+          onClick={detection.retry}
+          title={detection.error}
+        >
+          Model deteksi gagal dimuat — klik untuk coba lagi
+        </button>
+      )}
+      {detVisible && (
+        <div className="det-chip ok" aria-live="polite">
+          Deteksi: {detection.detFps !== null ? `${detection.detFps} fps` : "…"}
+          {Object.entries(detection.counts).map(([label, n]) => (
+            <span key={label}>
+              {" "}
+              · {label}: {n}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <button
+        id="detBtn"
+        type="button"
+        aria-label={
+          detection.enabled
+            ? "Matikan deteksi kendaraan"
+            : "Nyalakan deteksi kendaraan"
+        }
+        aria-pressed={detection.enabled}
+        className={detection.enabled ? "on" : ""}
+        onClick={detection.toggle}
+      >
+        ◎
+      </button>
       <button
         id="fsBtn"
         type="button"

@@ -73,10 +73,21 @@ npm install
 
 ```bash
 cd dashboard
+npm install
+scripts\unduh-model.bat   # ★ #60 — Windows, SEKALI saja → public/models/yolo26n.onnx
+                          # (Linux/Mac: bash scripts/unduh-model.sh)
 npm run build        # sekali per ada perubahan frontend → dashboard/dist/
 cd ../backend
 npm start            # → http://localhost:3000
 ```
+
+Buka **http://localhost:3000**. Backend melayani app + proksi stream dari satu
+origin → browser tidak kena CORS di environment apa pun.
+
+> **Model deteksi (#60):** file `yolo26n.onnx` (~10 MB) TIDAK ikut repo
+> (`.gitignore`) — wajib unduh sekali via script di atas SEBELUM `npm run build`
+> (agar ikut ke `dist/models/`). Tanpa file ini, chip deteksi menampilkan
+> "Model deteksi gagal dimuat — klik untuk coba lagi" (stream tetap jalan).
 
 Buka **http://localhost:3000**. Backend melayani app + proksi stream dari satu
 origin → browser tidak kena CORS di environment apa pun.
@@ -179,7 +190,16 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 - [ ] Klik badge → popover "Metrik sesi berjalan": bitrate, resolusi, FPS **terisi angka** (bukan `–`).
 - [ ] Matikan WiFi ±10 detik → badge **◌ BUFFERING** lalu **↻ MENYAMBUNG ULANG**,
       log mencatat urutan backoff (1s → 2s → 5s → 15s → 30s); nyalakan WiFi → kembali **LIVE**.
-- [ ] Pagar scope tetap: **tanpa tombol record**, tanpa panel deteksi, tanpa face recognition.
+- [ ] **#60 — Anti-buffering:** setelah stream stabil, badge menunjukkan
+      **● DELAY · ±5 dtk** (BUKAN LIVE — ini disengaja) + strip bawah
+      "Anti-buffering aktif — tertinggal ±5 dtk (sengaja, agar gambar tidak tersendat)".
+      Log koneksi mencatat "Anti-buffering: posisi diset 5 dtk di belakang live edge".
+- [ ] **#60 — Deteksi kendaraan:** box muncul di atas kendaraan —
+      **BIRU = ke atas, HIJAU = ke bawah**, label "mobil/motor/truk kecil/truk besar
+      + % + #id". Chip kanan-bawah "Deteksi: N fps" (N ≈ 8–15 di laptop).
+      Tombol ◎ mematikan/menyalakan overlay.
+- [ ] Pagar scope tetap: **tanpa tombol record**, tanpa face recognition.
+      (Panel deteksi kini ADA — larangan dicabut Rama 15 Okt 2026 14:37 WIB.)
 
 **Mode dev (§4b):**
 - [ ] `npm run dev` → buka `http://localhost:5173` — badge **● LIVE** juga muncul
@@ -203,6 +223,8 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 | Halaman putih / `Failed to fetch` ke `.m3u8` | WAF server memblokir IP jaringan ini | Uji dari jaringan lain (tethering HP); jalankan preflight §4 |
 | Overlay `Gagal memuat stream` + log `GALAT` | Manifest tidak terjangkau / playlist tidak valid | Cek preflight §4 → harus `200` + isi diawali `#EXTM3U` |
 | `HLS tidak didukung browser ini.` | Browser tanpa MSE (atau sangat lawas) | Pakai Chrome/Edge terbaru |
+| Chip "Model deteksi gagal dimuat" | `yolo26n.onnx` belum diunduh / build sebelum unduh | `scripts\unduh-model.bat` → `npm run build` ulang; klik chip untuk coba lagi |
+| Deteksi lambat (< 5 fps) di laptop | CPU lemah / tab lain berat | Tutup tab berat; ORT otomatis 1 thread bila tanpa COOP/COEP — pastikan via backend/:3000 |
 | Badge `◌ BUFFERING` terus-menerus | Bandwidth tidak cukup untuk level 1080p | App otomatis turunkan kualitas (stall > 10 dtk); bila tetap, cek kecepatan internet |
 | `npm install` gagal | Node terlalu lama / cache korup | `node -v` (butuh 18+); `npm cache clean --force` lalu ulangi |
 | Log koneksi kosong | JS error / bundle gagal load | Buka DevTools → Console; pastikan `npm run build` sukses & `dist/` lengkap |
@@ -281,6 +303,18 @@ gods_eye/
   runbook + README direvisi. Teruji lokal: `/` → 200, `/api/health` → ok, `/cctv/*` teruskan
   (500 dari VM = upstream diblokir WAF, routing benar).
   ⚠️ "Video tampil" WAJIB verifikasi Rama di laptop (jaringan rumah). |
+| 60 | Gunet | **BUILD ONLY — JANGAN PUSH** (review Rama dulu). Dua fitur: (1) **Anti-buffering**:
+  player dijaga ±5 dtk di belakang live edge (trik web Bekasi), strip jujur "±5 dtk",
+  `maxLiveSyncPlaybackRate: 1`, reconnect existing utuh. (2) **Deteksi kendaraan YOLO26n**
+  (larangan dicabut Rama 14:37 WIB): ONNX Runtime WASM di Web Worker (~10fps, video 60fps
+  tak block), kelas motor/mobil/truk kecil/truk besar, CentroidTracker (arah dari delta y),
+  box BIRU=ke atas / HIJAU=ke bawah, canvas overlay + toggle + chip fps.
+  Header COOP/COEP (backend + Vite dev) untuk WASM multi-thread. Model via
+  `scripts/unduh-model.*` (tidak di-commit). Fallback PicoDet = slot kosong
+  (format belum terverifikasi — tidak dikarang). Terverifikasi VM: `npm run build` bersih;
+  17 unit test logika lolos; model asli [1,300,6] terkonfirmasi via ORT;
+  headless Chromium: render tanpa JS error, worker+model+wasm termuat, chip "Deteksi" tampil,
+  toggle on/off OK. ⚠️ **Stream + akurasi deteksi WAJIB verifikasi Rama di laptop.** |
 
 Berikutnya (sesuai urutan Meeting #4): Rama pilih hasil benchmark model i5 →
 pencabutan larangan detection → fase deteksi (arsitektur ulang + audit Cipher fokus model & UU PDP).

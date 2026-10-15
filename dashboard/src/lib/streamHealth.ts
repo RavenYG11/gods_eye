@@ -61,6 +61,19 @@ const BACKOFF_MS = [1000, 2000, 5000, 15000, 30000];
 const MAX_LOG = 300;
 /** Ambang LIVE vs DELAY: frame ≤ 3 dtk dari ujung playlist = LIVE. */
 const LIVE_THRESHOLD_SEC = 3;
+/**
+ * ANTI-BUFFERING — intentional delay (#60, temuan Rama 15 Okt 2026):
+ * web resmi CCTV Bekasi tidak kelihatan buffering karena stream-nya SENGAJA
+ * di-delay beberapa detik di belakang live edge (bukti: seret playhead ke
+ * posisi terbaru → buffering langsung muncul). Kita tiru trik itu: player
+ * dijaga ~5 dtk di belakang live edge. Ditampilkan JUJUR di UI (strip delay
+ * "±5 dtk") — bukan disembunyikan.
+ */
+const INTENTIONAL_DELAY_SEC = 5;
+/** Bila offset menyusut di bawah ini (hanyut ke live edge), dorong balik. */
+const DELAY_NUDGE_FLOOR_SEC = 2;
+/** Cooldown antar dorongan balik (ms) agar tidak seek berulang. */
+const DELAY_NUDGE_COOLDOWN_MS = 10_000;
 /** Stall > 10 dtk + multi-bitrate → turunkan kualitas dulu (§4 butir 4). */
 const STALL_DOWNGRADE_MS = 10_000;
 /** Interval pemeriksaan latar saat OFFLINE (mockup: "pemeriksaan otomatis
@@ -102,6 +115,7 @@ export class StreamHealth {
   private prevFrames = 0;
   private prevFramesAt = 0;
   private nativeHls = false;
+  private lastDelayNudgeAt = 0;
 
   /**
    * Sinyal "player nunggu data" yang jujur: event 'waiting' milik <video>.
@@ -240,6 +254,9 @@ export class StreamHealth {
       fragLoadingMaxRetry: 4,
       fragLoadingRetryDelay: 2000,
       maxBufferLength: 30,
+      // #60 anti-buffering: JANGAN kejar live edge dengan mempercepat playback.
+      // Offset ~5 dtk dijaga manual (applyIntentionalDelay) agar stabil.
+      maxLiveSyncPlaybackRate: 1,
     });
     this.hls = hls;
 
@@ -257,6 +274,8 @@ export class StreamHealth {
           `Terhubung — manifest dimuat (${levels} level kualitas tersedia).`,
         );
       }
+      // #60: mulai (dan tiap reconnect) langsung di posisi liveEdge − 5 dtk.
+      this.applyIntentionalDelay("start");
       this.setStatus("live");
       video.play().catch(() => {
         this.pushLog(
@@ -466,6 +485,17 @@ export class StreamHealth {
     if (typeof edge !== "number" || !Number.isFinite(edge)) return;
     if (video.currentTime <= 0) return;
     const delay = Math.max(0, edge - video.currentTime);
+
+    // #60: pertahankan offset anti-buffering —
+    //  - hanyut terlalu dekat ke live edge (< 2 dtk) → dorong balik ke −5 dtk
+    //    (terlalu dekat = risiko buffering, ini inti trik Bekasi);
+    //  - tertinggal terlalu jauh (> 15 dtk, mis. setelah stall panjang) →
+    //    lompat maju ke −5 dtk (strip berjanji "±5 dtk" — tepati).
+    if (delay < DELAY_NUDGE_FLOOR_SEC || delay > INTENTIONAL_DELAY_SEC * 3) {
+      this.applyIntentionalDelay("nudge");
+      return;
+    }
+
     const sec = Math.round(delay);
     if (delay <= LIVE_THRESHOLD_SEC) {
       if (this.status !== "live" || this.delaySec !== 0) {
@@ -475,6 +505,39 @@ export class StreamHealth {
     } else if (this.status !== "delay" || this.delaySec !== sec) {
       this.delaySec = sec;
       this.setStatus("delay");
+    }
+  }
+
+  /**
+   * #60 anti-buffering: set posisi play ke (liveEdge − 5 dtk).
+   * Dipanggil saat start/reconnect ("start") dan saat offset menyusut
+   * ("nudge", dibatasi cooldown). Reconnect logic existing tidak diubah —
+   * fungsi ini hanya menggeser posisi setelah stream tersambung.
+   */
+  private applyIntentionalDelay(reason: "start" | "nudge"): void {
+    const hls = this.hls;
+    const video = this.video;
+    if (!hls || !video) return;
+    const edge = hls.liveSyncPosition;
+    if (typeof edge !== "number" || !Number.isFinite(edge) || edge <= 0) return;
+
+    const target = Math.max(0, edge - INTENTIONAL_DELAY_SEC);
+    const gap = Math.abs(video.currentTime - target);
+    if (reason === "start" && gap < 1.5) return; // sudah di posisi benar
+    if (reason === "nudge") {
+      const now = Date.now();
+      if (now - this.lastDelayNudgeAt < DELAY_NUDGE_COOLDOWN_MS) return;
+      this.lastDelayNudgeAt = now;
+    }
+    try {
+      video.currentTime = target;
+      this.pushLog(
+        "info",
+        `Anti-buffering: posisi diset ${INTENTIONAL_DELAY_SEC} dtk di belakang ` +
+          `live edge (trik web resmi Bekasi — delay tampil jujur di strip bawah).`,
+      );
+    } catch {
+      // seek gagal (mis. belum ada buffer) — biarkan hls.js yang mengatur.
     }
   }
 

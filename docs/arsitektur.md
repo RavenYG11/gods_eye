@@ -6,6 +6,8 @@
 
 Keputusan Meeting #4 yang mengunci dokumen ini: **Opsi C Hybrid** — MVP 100% frontend, tanpa backend, tanpa object detection. Modul `detection/` berisi **kontrak saja** (detection-ready, agnostik-model) supaya saat Rama mencabut larangan + hasil benchmark i5 keluar, modul deteksi tinggal dipasang tanpa mengubah dashboard.
 
+> **Update 15 Okt 2026:** perintah fullstack Rama #59 menambah backend Node.js (proksi `/cctv/*` + serve `dist/`) — "tanpa backend" di atas DIBATALKAN. Perintah #60 mencabut larangan deteksi — modul `detection/` kini berisi implementasi YOLO26n (§2).
+
 ---
 
 ## 1. Stack & struktur monorepo
@@ -32,9 +34,15 @@ gods-eye/
 │   │   │   ├── StreamPlayer.tsx      # Video + overlay status
 │   │   │   ├── StreamHealthBadge.tsx # Indikator LIVE/BUFFERING/dll
 │   │   │   └── CameraSelector.tsx    # Siap multi-kamera (v0.1: 1 item, disabled)
-│   │   ├── detection/              # ★ KONTRAK SAJA — lihat §2
-│   │   │   ├── types.ts            # Detection, DetectionFrame, Detector, DetectionPort
-│   │   │   └── index.ts            # Re-export; TIDAK ada implementasi model
+│   │   ├── detection/              # ★ Implementasi YOLO26n (#60) — lihat §2
+│   │   │   ├── types.ts            # Kontrak data (Detection, Detector, DetectionPort)
+│   │   │   ├── vehicleConfig.ts    # Semua angka ajaib + URL model
+│   │   │   ├── yolo26n.ts          # Parse output [1,300,6], letterbox, preprocess
+│   │   │   ├── tracker.ts          # CentroidTracker: trackId + arah
+│   │   │   ├── onnxDetector.ts     # Detector via ONNX Runtime (di worker)
+│   │   │   ├── detection.worker.ts # Worker inferensi ~10fps (non-blocking)
+│   │   │   ├── workerDetector.ts   # Pembungkus worker → Detector
+│   │   │   └── index.ts            # Satu-satunya pintu masuk dashboard
 │   │   ├── config/
 │   │   │   └── cameras.ts          # Daftar kamera — URL HLS di sini (§3)
 │   │   ├── lib/
@@ -58,44 +66,48 @@ gods-eye/
 
 ---
 
-## 2. Modul `detection/` — kontrak saja
+## 2. Modul `detection/` — implementasi YOLO26n (#60)
 
-**Aturan keras:** tidak ada file model, tidak ada bobot, tidak ada kode inferensi di v0.1. Modul ini hanya mendefinisikan *bentuk* data dan *bentuk* interface, supaya dashboard "detection-ready".
+**Status 15 Okt 2026 (#60):** Rama MENCABUT larangan deteksi ("langsung bikin
+object detectionnya"). Modul ini sekarang berisi implementasi nyata —
+bukan lagi kontrak saja. Benchmark i5 BELUM dijalankan (tetap catatan).
 
-```ts
-// dashboard/src/detection/types.ts
+**Aturan keras yang TETAP berlaku:** dashboard tidak pernah import model
+langsung — selalu lewat `DetectionPort` (factory + interface di
+`detection/index.ts`). Bobot `.onnx` tidak di-commit (diunduh via
+`dashboard/scripts/unduh-model.*`).
 
-/** Satu kotak deteksi — selaras dengan skema JSON Broto (beku). */
-export interface Detection {
-  classId: number;        // ← class_id (Broto)
-  label: string;          // ← label, mis. "mobil", "motor", "orang"
-  confidence: number;     // ← conf, 0..1
-  bbox: [number, number, number, number]; // ← bbox_xywh: [x, y, w, h] piksel
-  trackId?: number;       // opsional — diisi tracker bila ada
-  timestamp: number;      // ← wall_time, epoch ms
-}
+**Peta modul:**
 
-/** Satu frame hasil deteksi. */
-export interface DetectionFrame {
-  cameraId: string;       // ← camera_id
-  framePts: number;       // ← frame_pts (presentation timestamp stream)
-  wallTime: number;       // ← wall_time
-  detections: Detection[];
-}
+| File | Peran |
+|---|---|
+| `types.ts` | Kontrak data: `Detection`, `DetectionFrame`, `Detector`, `DetectionPort` (+ ekstensi UI `direction`) |
+| `vehicleConfig.ts` | SEMUA angka ajaib: URL model, threshold, warna box, thread WASM |
+| `yolo26n.ts` | Helper murni: letterbox, parse output `[1,300,6]` NMS-free, preprocess NCHW |
+| `tracker.ts` | `CentroidTracker`: trackId + arah dari delta y centroid |
+| `onnxDetector.ts` | `Detector` via ONNX Runtime WASM (jalan di worker) |
+| `detection.worker.ts` | Worker: inferensi + tracking ~10fps, non-blocking |
+| `workerDetector.ts` | Pembungkus worker → `Detector` untuk main thread |
+| `workerProtocol.ts` | Bentuk pesan main ⇄ worker |
 
-/** Kontrak yang WAJIB dipenuhi implementasi model apapun (YOLO26n, PicoDet, dst). */
-export interface Detector {
-  /** Muat model sekali di awal. Melempar Error bila gagal. */
-  init(opts: { modelUrl: string; labels: string[] }): Promise<void>;
-  /** Satu frame video → daftar kotak. TIDAK boleh melempar saat stream jalan. */
-  detect(frame: ImageData | HTMLVideoElement): Promise<Detection[]>;
-  /** Bebaskan resource (dipanggil saat ganti kamera / unmount). */
-  dispose(): Promise<void>;
-}
+**Fakta model (riset #48, diverifikasi dari file asli 15 Okt 2026):**
+YOLO26n resmi Ultralytics — input 640×640, output `[1,300,6]` =
+`[x1,y1,x2,y2,skor,kelas]` final NMS-free; kelas COCO: 2=mobil, 3=motor,
+7=truk ("truk" dipecah jadi kecil/besar via ASUMSI luas bbox §vehicleConfig).
+URL: `https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.onnx`
+(9.941.957 byte). Lisensi model: AGPL-3.0 (Ultralytics) — bobot tidak
+di-commit; ONNX Runtime: MIT.
 
-/** Port yang dipakai dashboard — dashboard TIDAK pernah import model langsung. */
-export type DetectionPort = Detector;
-```
+**Keputusan WASM:** onnxruntime-web ≥1.30 hanya menyediakan build *threaded*
+→ butuh SharedArrayBuffer → butuh header COOP/COEP (dipasang di
+`backend/server.js` + `vite.config.ts`, pola Ventra 2026-10-14). Tanpa
+cross-origin isolation, ORT otomatis turun ke 1 thread (deteksi tetap jalan,
+lebih lambat).
+
+**Fallback PP-PicoDet-S (#60):** slot `modelFallbackUrl` sudah dikabel di
+worker, TAPI string kosong — format output ONNX PicoDet BELUM terverifikasi,
+jadi parser fallback tidak dibuat (dilarang mengarang). Diisi setelah export
+ONNX PicoDet terverifikasi.
 
 **Skema JSON Broto (beku, acuan serialisasi):**
 
@@ -110,9 +122,7 @@ export type DetectionPort = Detector;
 }
 ```
 
-Pemetaan: `camera_id→cameraId`, `frame_pts→framePts`, `wall_time→wallTime/timestamp`, `conf→confidence`, `bbox_xywh→bbox`. Konversi JSON↔TS dilakukan di satu fungsi `adapters.ts` (dibuat Gunet saat fase deteksi dibuka) — bukan di komponen UI.
-
-**Catatan untuk Gunet:** sampai Rama mencabut larangan, `detection/index.ts` hanya re-export types. Jangan buat stub `detect()` yang pura-pura jalan — stub menyesatkan QA.
+Pemetaan: `camera_id→cameraId`, `frame_pts→framePts`, `wall_time→wallTime/timestamp`, `conf→confidence`, `bbox_xywh→bbox`. Field `direction` & `trackId` adalah ekstensi UI — TIDAK diserialisasi ke JSON Broto.
 
 ---
 
@@ -166,6 +176,8 @@ Fakta lapangan (temuan Rama, terverifikasi): stream Bekasi 60fps @1080p, tetapi 
 **Mesin di `lib/streamHealth.ts`:**
 
 1. **Hitung delay tiap detik:** `delay = hls.liveSyncPosition - video.currentTime`. Ambang: ≤3 dtk = LIVE, >3 dtk = DELAY (tampilkan "terlambat ±N dtk").
+
+   **#60 — Anti-buffering via intentional delay** (temuan Rama 15 Okt 2026: web resmi Bekasi tidak kelihatan buffering karena stream DI-DELAY beberapa detik di belakang live edge). Player SENGAJA dijaga ~5 dtk di belakang live edge: saat start/reconnect, posisi diset ke `liveSyncPosition − 5`; tiap detik offset diperiksa, bila hanyut < 2 dtk dari edge → dorong balik (cooldown 10 dtk). `maxLiveSyncPlaybackRate: 1` mencegah hls.js mempercepat playback mengejar edge. Reconnect logic existing tidak berubah. UI JUJUR: strip bawah "Anti-buffering aktif — tertinggal ±5 dtk (sengaja, agar gambar tidak tersendat)".
 2. **Auto-reconnect dengan backoff:** 1 dtk → 2 → 5 → 15 → 30 (maks), reset saat `MANIFEST_PARSED` sukses. Selama backoff tampilkan `RECONNECTING (percobaan ke-N)`.
 3. **Jangan spam reload:** satu siklus reconnect hanya satu `hls.destroy()` + instance baru; guard boolean cegah tumpuk.
 4. **Fallback kualitas:** bila `BUFFER_STALLED` > 10 dtk dan playlist punya multi-bitrate, turunkan level manual (`hls.nextLevel`) sebelum reconnect penuh.
@@ -180,7 +192,7 @@ Fakta lapangan (temuan Rama, terverifikasi): stream Bekasi 60fps @1080p, tetapi 
 1. **Face recognition = OUT OF SCOPE PERMANEN** (UU PDP). Label kelas deteksi tidak boleh berisi identitas orang. Kontrak `Detection.label` hanya untuk kelas objek (kendaraan, orang sebagai kategori umum).
 2. **Tanpa rekaman default.** Tidak ada tombol record, tidak ada penyimpanan frame di v0.1. (Snapshot/rekaman = pertanyaan keputusan Rama untuk fase berikut — bukan v0.1.)
 3. **Bobot model tidak di-commit.** Nanti saat fase deteksi: model diunduh terpisah (URL di config), `.gitignore` wajib mencakup `*.onnx`, `*.pt`, `*.bin`.
-4. **Object detection dilarang dibangun** sampai dua syarat terpenuhi: Rama mencabut larangan eksplisit + hasil benchmark i5 keluar (rekomendasi sementara: YOLO26n; cadangan: PP-PicoDet-S).
+4. **Object detection DIBUKA 15 Okt 2026 (#60)** — Rama mencabut larangan eksplisit ("langsung bikin object detectionnya"). Implementasi: YOLO26n via kontrak `Detector` (§2). Benchmark i5 BELUM dijalankan — tetap catatan verifikasi.
 5. **Model tidak diputuskan di v0.1** — arsitektur agnostik-model (§2) adalah caranya menunda keputusan tanpa rework.
 6. **URL stream di config** (§3), bukan di kode komponen; kredensial (bila suatu saat perlu) via env, bukan commit.
 
