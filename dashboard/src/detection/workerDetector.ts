@@ -25,6 +25,26 @@ export class WorkerVehicleDetector implements Detector {
    * menghitung fps deteksi secara jujur.
    */
   public lastSkipped = false;
+  /**
+   * #65: ambang yang diset SEBELUM worker ada (mis. slider digeser saat
+   * status masih "loading") — dikirim ke worker begitu init() membuatnya.
+   */
+  private pendingThreshold: number | null = null;
+
+  /**
+   * #65: ubah ambang confidence live (0,1–0,9) — diteruskan ke worker,
+   * berlaku untuk inferensi BERIKUTNYA. Aman dipanggil sebelum init()
+   * selesai: nilai ditahan di pendingThreshold lalu dikirim saat worker
+   * dibuat (urutan postMessage terjaga: init dulu, baru set-threshold).
+   */
+  setThreshold(threshold: number): void {
+    const clamped = Math.min(0.9, Math.max(0.1, threshold));
+    this.pendingThreshold = clamped;
+    if (this.worker && !this.disposed) {
+      const req: WorkerRequest = { type: "set-threshold", threshold: clamped };
+      this.worker.postMessage(req);
+    }
+  }
 
   /** Buat worker + muat model. Melempar bila model gagal dimuat. */
   async init(opts: {
@@ -60,6 +80,15 @@ export class WorkerVehicleDetector implements Detector {
       wasmBase: opts.wasmBase,
     };
     this.worker.postMessage(req);
+    // #65: kirim ambang yang mungkin sudah diset sebelum init
+    // (urutan postMessage terjaga — init diproses worker lebih dulu).
+    if (this.pendingThreshold !== null) {
+      const tReq: WorkerRequest = {
+        type: "set-threshold",
+        threshold: this.pendingThreshold,
+      };
+      this.worker.postMessage(tReq);
+    }
     await this.ready;
   }
 

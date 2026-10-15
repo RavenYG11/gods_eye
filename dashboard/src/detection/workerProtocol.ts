@@ -22,6 +22,14 @@ export type WorkerRequest =
       srcH: number;
       framePts: number;
       cameraId: string;
+    }
+  | {
+      type: "set-threshold";
+      /**
+       * #65: ambang confidence 0,1–0,9 — berlaku untuk inferensi
+       * BERIKUTNYA (bukan frame yang sedang berjalan). Fire-and-forget.
+       */
+      threshold: number;
     };
 
 export type WorkerResponse =

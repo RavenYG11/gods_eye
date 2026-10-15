@@ -35,6 +35,12 @@ workerSelf.onmessage = (e: MessageEvent<WorkerRequest>) => {
     void handleInit(msg.modelUrl, msg.fallbackUrl, msg.wasmBase);
     return;
   }
+  if (msg.type === "set-threshold") {
+    // #65: slider threshold UI — berlaku untuk inferensi berikutnya.
+    // Aman sebelum init (detector sudah ada, hanya menyimpan nilai).
+    detector.setThreshold(msg.threshold);
+    return;
+  }
   if (msg.type === "detect") {
     // Frame baru saat masih sibuk = dilewati (MAX_INFLIGHT=1, tanpa antrean).
     if (!ready || busy) {

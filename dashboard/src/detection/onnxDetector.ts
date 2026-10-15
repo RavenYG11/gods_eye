@@ -15,7 +15,11 @@ import {
   letterboxParams,
   parseYolo26nOutput,
 } from "./yolo26n";
-import { MODEL_INPUT_SIZE, ORT_NUM_THREADS } from "./vehicleConfig";
+import {
+  CONFIDENCE_THRESHOLD,
+  MODEL_INPUT_SIZE,
+  ORT_NUM_THREADS,
+} from "./vehicleConfig";
 
 // Tipe minimal dari onnxruntime-web — import dinamis di init() agar bundle
 // utama tetap ramping dan kegagalan load tidak meruntuhkan modul ini.
@@ -31,6 +35,20 @@ export class OnnxVehicleDetector implements Detector {
   private outputName = "";
   private canvas: OffscreenCanvas | null = null;
   private warmedUp = false;
+  /**
+   * #65: ambang confidence AKTIF — dipakai parseYolo26nOutput pada tiap
+   * inferensi. Diubah live via setThreshold() (slider UI 0,1–0,9).
+   */
+  private threshold: number = CONFIDENCE_THRESHOLD;
+
+  /**
+   * #65: ubah ambang confidence — BERLAKU NYATA pada inferensi berikutnya
+   * (diteruskan ke parseYolo26nOutput sebagai confidenceThreshold).
+   * Nilai dijepit ke 0,1–0,9 sesuai kontrak slider UI.
+   */
+  setThreshold(threshold: number): void {
+    this.threshold = Math.min(0.9, Math.max(0.1, threshold));
+  }
 
   /**
    * Muat model. Melempar Error bila gagal (kontrak: init BOLEH melempar).
@@ -116,7 +134,13 @@ export class OnnxVehicleDetector implements Detector {
     const outTensor = results[this.outputName];
     const data = outTensor.data as ArrayLike<number>;
     void inferMs; // dicatat pemanggil bila perlu; bukan bagian kontrak
-    return parseYolo26nOutput(data, { srcW, srcH, lb, timestamp });
+    return parseYolo26nOutput(data, {
+      srcW,
+      srcH,
+      lb,
+      timestamp,
+      confidenceThreshold: this.threshold, // #65: ambang live dari slider
+    });
   }
 
   /**

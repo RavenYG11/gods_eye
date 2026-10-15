@@ -46,6 +46,11 @@ export interface Detector {
   detect(frame: ImageData | HTMLVideoElement): Promise<Detection[]>;
   /** Bebaskan resource (dipanggil saat ganti kamera / unmount). */
   dispose(): Promise<void>;
+  /**
+   * #65: ubah ambang confidence live — OPSIONAL, tidak semua implementasi
+   * mendukung. WorkerVehicleDetector & OnnxVehicleDetector mendukung.
+   */
+  setThreshold?(threshold: number): void;
 }
 
 /** Port yang dipakai dashboard — dashboard TIDAK pernah import model langsung. */
