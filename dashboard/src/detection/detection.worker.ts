@@ -42,9 +42,13 @@ workerSelf.onmessage = (e: MessageEvent<WorkerRequest>) => {
     return;
   }
   if (msg.type === "detect") {
-    // Frame baru saat masih sibuk = dilewati (MAX_INFLIGHT=1, tanpa antrean).
+    // Frame baru saat masih sibuk = DITOLAK EKSPLISIT (MAX_INFLIGHT=1, tanpa
+    // antrean). #68: dulu dibuang diam-diam (frame.close() tanpa respons) →
+    // promise main thread menggantung sampai timeout → fps palsu. Kini worker
+    // membalas "dropped" agar main thread langsung tahu ini BUKAN hasil.
     if (!ready || busy) {
       msg.frame.close();
+      post({ type: "dropped" });
       return;
     }
     busy = true;
@@ -65,7 +69,8 @@ async function handleInit(
   try {
     await detector.initWithWasm({ modelUrl, labels }, wasmBase);
     ready = true;
-    post({ type: "ready", modelUrl });
+    // #68: sertakan execution provider terpilih (webgl|wasm) untuk chip UI.
+    post({ type: "ready", modelUrl, provider: detector.provider });
   } catch (err) {
     const primaryMsg = err instanceof Error ? err.message : String(err);
     // Fallback: hanya bila URL fallback dikonfigurasi (saat ini "" — lihat
@@ -76,7 +81,7 @@ async function handleInit(
       try {
         await detector.initWithWasm({ modelUrl: fallbackUrl, labels }, wasmBase);
         ready = true;
-        post({ type: "ready", modelUrl: fallbackUrl });
+        post({ type: "ready", modelUrl: fallbackUrl, provider: detector.provider });
         return;
       } catch {
         // pesan galat utama yang dilaporkan
@@ -90,10 +95,14 @@ async function handleDetect(
   msg: Extract<WorkerRequest, { type: "detect" }>,
 ): Promise<void> {
   const { frame, srcW, srcH, framePts, cameraId } = msg;
+  // #68: ukur biaya SATU putaran worker (letterbox + inferensi + tracking)
+  // agar bottleneck fps terbaca dari UI, bukan tebakan.
+  const t0 = performance.now();
   try {
     const timestamp = Date.now();
     const raw = await detector.inferFromBitmap(frame, srcW, srcH, timestamp);
-    const tracked = tracker.update(raw);
+    // #68: framePts diteruskan ke tracker = basis waktu velocity & prediksi.
+    const tracked = tracker.update(raw, framePts);
     post({
       type: "result",
       frame: {
@@ -101,6 +110,7 @@ async function handleDetect(
         framePts,
         wallTime: timestamp,
         detections: tracked,
+        inferMs: Math.round(performance.now() - t0),
       },
     });
   } catch {
@@ -108,7 +118,13 @@ async function handleDetect(
     // kirim frame kosong agar overlay tidak macet di kotak lama.
     post({
       type: "result",
-      frame: { cameraId, framePts, wallTime: Date.now(), detections: [] },
+      frame: {
+        cameraId,
+        framePts,
+        wallTime: Date.now(),
+        detections: [],
+        inferMs: Math.round(performance.now() - t0),
+      },
     });
   } finally {
     frame.close();

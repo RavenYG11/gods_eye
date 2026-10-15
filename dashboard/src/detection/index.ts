@@ -21,7 +21,12 @@ export type {
   VehicleDirection,
 } from "./types";
 export type { TrackedDetection, TrackerOptions } from "./tracker";
-export { CentroidTracker, DEFAULT_TRACKER_OPTIONS } from "./tracker";
+export {
+  CentroidTracker,
+  DEFAULT_TRACKER_OPTIONS,
+  PREDICT_CAP_S,
+  predictBbox,
+} from "./tracker";
 export { WorkerVehicleDetector } from "./workerDetector";
 export {
   CONFIDENCE_THRESHOLD,

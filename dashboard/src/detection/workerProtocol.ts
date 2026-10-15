@@ -33,6 +33,14 @@ export type WorkerRequest =
     };
 
 export type WorkerResponse =
-  | { type: "ready"; modelUrl: string }
+  | { type: "ready"; modelUrl: string; provider: string }
   | { type: "init-error"; message: string }
-  | { type: "result"; frame: DetectionFrame };
+  | { type: "result"; frame: DetectionFrame }
+  /**
+   * #68: worker MASIH SIBUK saat frame baru tiba (MAX_INFLIGHT=1) — frame
+   * dibuang dengan pemberitahuan eksplisit (dulu: dibuang DIAM-DIAM via
+   * frame.close() tanpa respons → promise main thread menggantung sampai
+   * timeout 8 dtk → tiap timeout dihitung sebagai "hasil" → fps palsu 0,1
+   * + overlay dibersihkan. Lihat workerDetector.ts).
+   */
+  | { type: "dropped" };

@@ -18,6 +18,7 @@ import {
 import {
   CONFIDENCE_THRESHOLD,
   MODEL_INPUT_SIZE,
+  ORT_EXECUTION_PROVIDERS,
   ORT_NUM_THREADS,
 } from "./vehicleConfig";
 
@@ -40,6 +41,11 @@ export class OnnxVehicleDetector implements Detector {
    * inferensi. Diubah live via setThreshold() (slider UI 0,1–0,9).
    */
   private threshold: number = CONFIDENCE_THRESHOLD;
+  /**
+   * #68: execution provider yang akhirnya dipakai ("webgl" | "wasm") —
+   * dibaca worker untuk pesan "ready" → tampil di chip UI (pengukuran).
+   */
+  public provider = "wasm";
 
   /**
    * #65: ubah ambang confidence — BERLAKU NYATA pada inferensi berikutnya
@@ -69,14 +75,31 @@ export class OnnxVehicleDetector implements Detector {
       ort.env.wasm.wasmPaths = wasmBase; // wasm lokal (offline, base './'-aman)
     }
 
-    try {
-      this.session = await ort.InferenceSession.create(opts.modelUrl, {
-        executionProviders: ["wasm"],
-      });
-    } catch (e) {
+    // #68: rantai execution provider — dicoba BERURUTAN. "webgl" dulu: di
+    // laptop dengan GPU (termasuk iGPU Intel) YOLO 640×640 umumnya 2–5×
+    // lebih cepat daripada WASM; gagal → jatuh ke "wasm" (perilaku lama).
+    // Dipilih eksplisit per-provider (bukan array sekaligus) agar kegagalan
+    // satu provider tidak menggugurkan seluruh session — optimasi berbasis
+    // pengukuran (inferMs tampil live di chip UI), bukan asumsi.
+    const providers = [...ORT_EXECUTION_PROVIDERS];
+    let lastErr: unknown = null;
+    for (const ep of providers) {
+      try {
+        this.session = await ort.InferenceSession.create(opts.modelUrl, {
+          executionProviders: [ep],
+        });
+        this.provider = ep;
+        break;
+      } catch (e) {
+        lastErr = e;
+        this.session = null;
+      }
+    }
+    if (!this.session) {
+      const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
       throw new Error(
-        `Gagal memuat model ONNX ${opts.modelUrl}: ` +
-          `${e instanceof Error ? e.message : String(e)}`,
+        `Gagal memuat model ONNX ${opts.modelUrl} (provider dicoba: ` +
+          `${providers.join(", ")}): ${msg}`,
       );
     }
 

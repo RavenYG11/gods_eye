@@ -7,17 +7,43 @@ export const MODEL_INPUT_SIZE = 640;
 
 /**
  * Ambang kepercayaan minimum — di bawah ini kotak dibuang.
- * #62: default 0,5 (seimbang). Bukti: riset #48 §4.1 — default conf Ultralytics
- * 0,25 (dioptimalkan untuk mAP benchmark, bukan untuk tampilan live);
- * model NMS-free YOLO26n memancarkan 300 proposal/frame sehingga ambang rendah
- * membanjiri overlay dengan kotak borderline yang ikut berkedip. 0,5 memotong
- * sebagian besar false positive tanpa mengorbankan kendaraan jelas —
- * dan Rama bisa menggesernya live via slider di UI (range 0,1–0,9).
+ * #62: default 0,5 (seimbang). #68: 0,5 → 0,4 — BUKTI dari screenshot Rama
+ * (15 Okt 2026, CCTV malam): kendaraan JELAS terdeteksi di 51–54% (hampir
+ * gugur), kendaraan agak jauh/gelap skor 0,3–0,5 → "akurasi <10%" yang
+ * dikeluhkan Rama sebagian besar adalah kendaraan NYATA yang skornya di
+ * bawah 0,5, bukan model gagal total. 0,4 menangkapnya; false positive
+ * tambahan diredam graceFrames + prediksi tracker, dan Rama bisa menggeser
+ * live via slider (0,1–0,9). Bila box palsu mengganggu → naikkan lagi.
+ * Riset #48 §4.1: default Ultralytics 0,25 (untuk mAP benchmark); 0,4 adalah
+ * kompromi tampilan-live untuk CCTV malam.
  */
-export const CONFIDENCE_THRESHOLD = 0.5;
+export const CONFIDENCE_THRESHOLD = 0.4;
 
 /** Target frame deteksi per detik (video 60fps TIDAK boleh block — §60). */
 export const CAPTURE_FPS = 10;
+
+/**
+ * #68: rantai execution provider ONNX Runtime — dicoba BERURUTAN, yang
+ * pertama berhasil dipakai untuk semua inferensi berikutnya.
+ * "webgl" dulu: di laptop dengan GPU (termasuk iGPU Intel) inferensi YOLO
+ * 640×640 umumnya 2–5× lebih cepat daripada WASM multi-thread; bila WebGL
+ * tak tersedia atau gagal, otomatis jatuh ke "wasm" (perilaku lama).
+ * Provider terpilih dicatat di log worker + chip deteksi — optimasi
+ * berbasis PENGUKURAN (inferMs tampil live di UI), bukan asumsi.
+ */
+export const ORT_EXECUTION_PROVIDERS: readonly string[] = ["webgl", "wasm"];
+
+/**
+ * #68: tangkap frame video dalam resolusi lebih kecil (960×540, bukan
+ * 1920×1080). Dua penghematan: (a) transfer ImageBitmap antar-thread
+ * 8MB → ±2MB per frame; (b) waktu createImageBitmap di main thread turun.
+ * TIDAK mengurangi detail input model: letterbox tetap menskala ke
+ * 640×640 (isi efektif 640×360 — sama seperti dari 1080p), hanya langkah
+ * resampling-nya dua tahap. Bila createImageBitmap(resize) gagal di
+ * browser tertentu, otomatis fallback ke capture penuh.
+ */
+export const CAPTURE_RESIZE_WIDTH = 960;
+export const CAPTURE_RESIZE_HEIGHT = 540;
 
 /**
  * Thread WASM ONNX Runtime.

@@ -4,17 +4,30 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { CameraConfig } from "../config/cameras";
-import { StreamHealth, type StreamSnapshot } from "./streamHealth";
+import {
+  StreamHealth,
+  type StreamSnapshot,
+  type TelemetrySample,
+} from "./streamHealth";
 
 export interface StreamSession {
   snap: StreamSnapshot;
   /** Ref callback untuk <video> — dipasang oleh StreamPlayer. */
   attachVideo: (el: HTMLVideoElement | null) => void;
   retry: () => void;
+  /** #68: salinan ring buffer telemetri playback (bukti uji 10+ menit). */
+  getTelemetry: () => TelemetrySample[];
+  /**
+   * #69: penjaga jendela DVR — dipanggil UI tepat SEBELUM resume dari pause
+   * agar posisi play masih valid (tidak menabrak posisi kedaluwarsa).
+   */
+  guardDvrWindow: () => boolean;
 }
 
 const INITIAL: StreamSnapshot = {
   status: "loading",
+  paused: false,
+  playback: { pos: 0, bufStart: -1, bufEnd: -1, edge: -1, windowStart: -1 },
   delaySec: 0,
   attempt: 0,
   maxAttempts: 5,
@@ -63,5 +76,15 @@ export function useStreamSession(camera: CameraConfig): StreamSession {
     engineRef.current?.retry();
   });
 
-  return { snap, attachVideo, retry };
+  // #68: stabil — engine tidak berubah selama sesi v0.1.
+  const [getTelemetry] = useState(
+    () => () => engineRef.current?.getTelemetry() ?? [],
+  );
+
+  // #69: stabil — engine tidak berubah selama sesi v0.1.
+  const [guardDvrWindow] = useState(
+    () => () => engineRef.current?.guardDvrWindow() ?? false,
+  );
+
+  return { snap, attachVideo, retry, getTelemetry, guardDvrWindow };
 }

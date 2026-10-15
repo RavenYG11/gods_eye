@@ -40,6 +40,14 @@ export interface StreamMetrics {
 
 export interface StreamSnapshot {
   status: StreamStatus;
+  /** #69: true bila <video> sedang dijeda user (dari event play/pause nyata). */
+  paused: boolean;
+  /**
+   * #69: info playback terkini — bahan kontrol play/pause + tampilan waktu
+   * + bar jendela DVR. Diperbarui tiap 1 dtk oleh tickDelay() (selalu nilai
+   * TERBARU, bukan ring buffer seperti telemetri #68).
+   */
+  playback: PlaybackInfo;
   /** Detik keterlambatan dari live edge (relevan saat status 'delay'). */
   delaySec: number;
   /** Nomor percobaan reconnect berjalan (1-based). */
@@ -55,6 +63,57 @@ export interface StreamSnapshot {
 
 type Listener = (snap: StreamSnapshot) => void;
 
+/**
+ * #68 — TELEMETRI PLAYBACK (bukti untuk uji 10+ menit Rama).
+ * Satu sampel tiap 2 dtk: posisi play vs ujung buffer vs live edge.
+ * Kriteria lolos uji: TIDAK ADA siklus buffering berulang DAN
+ * gap (bufEnd − pos) TUMBUH/STABIL — bukan menyusut ke nol.
+ * Diunduh sebagai JSON dari popover metrik ("Unduh log playback").
+ */
+export interface TelemetrySample {
+  /** Wall time (epoch ms). */
+  t: number;
+  /** video.currentTime (dtk). */
+  pos: number;
+  /** buffered.start(0) (dtk); −1 bila buffer kosong. */
+  bufStart: number;
+  /** buffered.end(terakhir) (dtk); −1 bila buffer kosong. */
+  bufEnd: number;
+  /** hls.liveSyncPosition (dtk); −1 bila tak diketahui. */
+  edge: number;
+  /** edge − pos (dtk): keterlambatan dari live edge. */
+  delay: number;
+  /** bufEnd − pos (dtk): "cushion" ala trik Bekasi — harus tumbuh/stabil. */
+  gap: number;
+  /** Jumlah stall kumulatif sesi. */
+  stalls: number;
+  status: StreamStatus;
+}
+
+/** Interval sampling telemetri (ms). */
+const TELEMETRY_INTERVAL_MS = 2000;
+/** Kapasitas ring buffer telemetri: 2000 sampel ≈ 66 menit @2 dtk. */
+const TELEMETRY_MAX = 2000;
+
+/**
+ * #69 — INFO PLAYBACK TERKINI (bahan kontrol play/pause + tampilan waktu +
+ * bar jendela DVR). Diperbarui tiap 1 dtk oleh tickDelay() — selalu nilai
+ * TERBARU (bukan ring buffer seperti telemetri #68). Nilai −1 = tak tersedia
+ * saat itu (jujur, bukan nol).
+ */
+export interface PlaybackInfo {
+  /** video.currentTime (dtk). */
+  pos: number;
+  /** buffered.start(0) (dtk); −1 bila buffer kosong. */
+  bufStart: number;
+  /** buffered.end(terakhir) (dtk); −1 bila buffer kosong. */
+  bufEnd: number;
+  /** hls.liveSyncPosition (dtk); −1 bila tak diketahui. */
+  edge: number;
+  /** Awal sliding window playlist (frags[0].start, dtk); −1 bila tak diketahui. */
+  windowStart: number;
+}
+
 /** Jadwal backoff antar percobaan reconnect (ms): 1→2→5→15→30 dtk. */
 const BACKOFF_MS = [1000, 2000, 5000, 15000, 30000];
 /** Batas log agar memori tidak tumbuh tanpa batas (entri terlama dibuang). */
@@ -62,26 +121,42 @@ const MAX_LOG = 300;
 /** Ambang LIVE vs DELAY: frame ≤ 3 dtk dari ujung playlist = LIVE. */
 const LIVE_THRESHOLD_SEC = 3;
 /**
- * ANTI-BUFFERING — intentional delay (#60, temuan Rama 15 Okt 2026):
- * web resmi CCTV Bekasi tidak kelihatan buffering karena stream-nya SENGAJA
- * di-delay beberapa detik di belakang live edge. Kita tiru trik itu.
+ * ANTI-BUFFERING — trik web resmi CCTV Bekasi (#60, observasi Rama 15 Okt 2026):
+ * situs Bekasi tidak pernah buffering karena (a) video mulai diputar
+ * BEBERAPA DETIK DI BELAKANG tepi buffer, dan (b) player TIDAK PERNAH
+ * mengejar live edge — selisih buffer-play DIBIARKAN MEMBESAR seiring waktu
+ * (bisa 1 menit+), tetap lancar karena cushion buffer selalu tebal.
  *
  * #66 (15 Okt 2026) — KOREKSI IMPLEMENTASI: pola #60 (seek manual
  * video.currentTime tiap detik via applyIntentionalDelay) TERBUKTI menjadi
  * akar buffering 80%: tiap seek menginvalidasi buffer internal hls.js →
- * siklus rebuffer tanpa henti. Mulai #66, offset ±5 dtk dijaga NATIF oleh
- * hls.js (liveSyncDuration: 5, liveMaxLatencyDuration: 30,
- * maxLiveSyncPlaybackRate: 1) — halus, tanpa seek brutal. Delay tampil
- * diukur real-time tiap detik (delaySec) untuk strip/badge yang jujur.
+ * siklus rebuffer tanpa henti. Offset ±5 dtk dialihkan ke NATIF hls.js
+ * (liveSyncDuration: 5, maxLiveSyncPlaybackRate: 1).
+ *
+ * #68 (15 Okt 2026, perintah Rama ~20:40) — KOREKSI KEDUA, berbasis bukti:
+ * `liveMaxLatencyDuration: 30` (#66) TERNYATA masih "mengejar edge".
+ * BUKTI (hls.js 1.7.3, stream-controller, diverifikasi dari source):
+ * bila `currentTime < end − maxLatency`, hls.js MELAKUKAN SEEK KE
+ * liveSyncPosition (TEPI!). Jadi tiap drift > 30 dtk (mis. setelah stall)
+ * player "ditarik" ke tepi = buffer tipis = SIKLUS REBUFFER yang Rama
+ * laporkan. Mulai #68: liveMaxLatencyDuration = Infinity → catch-up natif
+ * MATI TOTAL; player tidak pernah ditarik ke tepi. Satu-satunya seek yang
+ * tersisa adalah saat posisi SUDAH KELUAR dari sliding window playlist
+ * (tidak bisa diputar sama sekali — last resort bawaan hls.js sendiri).
+ * `emergencyResync()` #66 (seek ke edge−6 bila drift > 60 dtk) DIHAPUS —
+ * itu bentuk lain "mengejar edge". Diganti PENJAGA JENDELA DVR
+ * (dvrWindowGuard): seek HANYA bila posisi play hampir kedaluwarsa dari
+ * playlist (data-driven, bukan timer), dan targetnya TETAP JAUH dari tepi
+ * (edge − 25 dtk) — bukan ke tepi.
  */
 /**
- * #66: ambang DARURAT — hanya bila player tertinggal lebih dari ini dari
- * live edge, lakukan emergencyResync() (seek sekali ke posisi aman).
- * Drift normal sepenuhnya urusan hls.js.
+ * #68: PENJAGA JENDELA DVR — trigger bila sisa jendela playlist di belakang
+ * posisi play kurang dari ini. BUKAN timer catch-up: hanya aktif bila posisi
+ * benar-benar hampir kedaluwarsa (data dari level.details.fragments).
  */
-const EXTREME_DRIFT_SEC = 60;
-/** Offset posisi aman untuk emergency resync (selaras liveSyncDuration: 5). */
-const EMERGENCY_RESYNC_OFFSET_SEC = 6;
+const DVR_GUARD_MARGIN_SEC = 10;
+/** #68: target seek penjaga DVR — tetap 25 dtk di belakang live edge (jauh dari tepi, cushion tebal). */
+const DVR_SAFE_BEHIND_SEC = 25;
 /** Stall > 10 dtk + multi-bitrate → turunkan kualitas dulu (§4 butir 4). */
 const STALL_DOWNGRADE_MS = 10_000;
 /** Interval pemeriksaan latar saat OFFLINE (mockup: "pemeriksaan otomatis
@@ -106,6 +181,16 @@ export class StreamHealth {
   private logEntries: LogEntry[] = [];
 
   private status: StreamStatus = "loading";
+  /** #69: state jeda dari event play/pause nyata <video> (bukan tebakan UI). */
+  private paused = false;
+  /** #69: info playback terkini (pos/buffer/edge/window), refresh tiap 1 dtk. */
+  private playback: PlaybackInfo = {
+    pos: 0,
+    bufStart: -1,
+    bufEnd: -1,
+    edge: -1,
+    windowStart: -1,
+  };
   private delaySec = 0;
   private attempt = 0; // 0 = belum ada percobaan; 1..5 saat reconnecting
   private countdownSec = 0;
@@ -119,6 +204,9 @@ export class StreamHealth {
   private fpsTimer: number | null = null;
   private stallTimer: number | null = null;
   private offlineTimer: number | null = null;
+  private telemetryTimer: number | null = null;
+  /** #68: ring buffer sampel playback (bukti uji 10+ menit). */
+  private telemetry: TelemetrySample[] = [];
   private mediaRecoverTried = false;
   private prevFrames = 0;
   private prevFramesAt = 0;
@@ -153,6 +241,24 @@ export class StreamHealth {
     }
   };
 
+  /**
+   * #69: state jeda yang JUJUR — dari event nyata <video>, bukan dari
+   * asumsi UI. Emit agar tombol play/pause + label waktu langsung sinkron.
+   */
+  private onVideoPlay = (): void => {
+    if (this.paused) {
+      this.paused = false;
+      this.emit();
+    }
+  };
+
+  private onVideoPause = (): void => {
+    if (!this.paused) {
+      this.paused = true;
+      this.emit();
+    }
+  };
+
   // ---------- API publik ----------
 
   subscribe(fn: Listener): () => void {
@@ -161,6 +267,27 @@ export class StreamHealth {
     return () => {
       this.listeners.delete(fn);
     };
+  }
+
+  /**
+   * #69: PENJAGA JENDELA DVR versi publik — dipanggil UI TEPAT SEBELUM
+   * resume dari pause (tombol play / klik video). Memastikan posisi play
+   * masih di dalam sliding window playlist SEBELUM video.play() dipanggil,
+   * sehingga resume tidak pernah menabrak posisi kedaluwarsa (yang akan
+   * memicu seek brutal / rebuffer). Mengembalikan true bila melakukan seek.
+   * Logika inti tetap di dvrWindowGuard() (#68) — tidak diduplikasi.
+   */
+  guardDvrWindow(): boolean {
+    return this.dvrWindowGuard();
+  }
+
+  /**
+   * #68: salinan ring buffer telemetri playback (urutan waktu menaik).
+   * Dipakai tombol "Unduh log playback (JSON)" di popover metrik —
+   * bukti uji 10+ menit: kolom `gap` (bufEnd − pos) harus tumbuh/stabil.
+   */
+  getTelemetry(): TelemetrySample[] {
+    return [...this.telemetry];
   }
 
   /** Tombol "Coba sambungkan lagi" / "Muat ulang" — langsung percobaan ke-1. */
@@ -188,6 +315,9 @@ export class StreamHealth {
     this.camera = camera;
     video.addEventListener("waiting", this.onVideoWaiting);
     video.addEventListener("playing", this.onVideoPlaying);
+    // #69: lacak jeda user dari event nyata (tombol play/pause + klik video).
+    video.addEventListener("play", this.onVideoPlay);
+    video.addEventListener("pause", this.onVideoPause);
     this.pushLog("info", `Memuat manifest HLS kamera "${camera.id}"…`);
     this.setStatus("loading");
     this.startCycle();
@@ -197,6 +327,11 @@ export class StreamHealth {
       this.emit();
     }, 1000);
     this.fpsTimer = window.setInterval(() => this.tickFps(), 2000);
+    // #68: sampling telemetri playback tiap 2 dtk (bukti uji 10+ menit).
+    this.telemetryTimer = window.setInterval(
+      () => this.tickTelemetry(),
+      TELEMETRY_INTERVAL_MS,
+    );
   }
 
   detach(): void {
@@ -208,6 +343,8 @@ export class StreamHealth {
     if (this.video) {
       this.video.removeEventListener("waiting", this.onVideoWaiting);
       this.video.removeEventListener("playing", this.onVideoPlaying);
+      this.video.removeEventListener("play", this.onVideoPlay);
+      this.video.removeEventListener("pause", this.onVideoPause);
       this.unbindNativeEvents(this.video);
       this.video.removeAttribute("src");
       this.video.load();
@@ -274,11 +411,16 @@ export class StreamHealth {
       // selaras janji strip "±5 dtk"). Diverifikasi di hls.js 1.7.3
       // (latency-controller: targetLatency = liveSyncDuration bila di-set).
       liveSyncDuration: 5,
-      // #66: PENGAMAN NATIF — hls.js hanya menarik maju ke liveSyncPosition
-      // bila tertinggal > 30 dtk (default = 3× durasi segmen ≈ 6–9 dtk, itu
-      // terlalu agresif: tiap stall sedang langsung "ditarik" ke live edge =
-      // buffering yang justru ingin dihindari trik delay ini).
-      liveMaxLatencyDuration: 30,
+      // #68: CATCH-UP NATIF DIMATIKAN TOTAL (Infinity). BUKTI (hls.js 1.7.3,
+      // stream-controller): bila currentTime < end − maxLatency, hls.js
+      // MELAKUKAN SEEK KE liveSyncPosition (tepi!). Nilai 30 (#66) berarti
+      // tiap drift > 30 dtk (mis. setelah stall) player "ditarik" ke tepi =
+      // buffer tipis = SIKLUS REBUFFER. Infinity = tidak pernah ditarik;
+      // seek hanya terjadi bila posisi sudah KELUAR dari sliding window
+      // (tidak bisa diputar sama sekali — last resort bawaan hls.js).
+      // Penyesuaian playbackRate tidak relevan di sini (hanya untuk
+      // lowLatencyMode — diverifikasi dari source latency-controller).
+      liveMaxLatencyDuration: Infinity,
       // #60 anti-buffering: JANGAN kejar live edge dengan mempercepat playback.
       maxLiveSyncPlaybackRate: 1,
     });
@@ -498,13 +640,14 @@ export class StreamHealth {
 
   /** Hitung delay dari live edge tiap detik → LIVE vs DELAY (§4 butir 1). */
   private tickDelay(): void {
-    const hls = this.hls;
     const video = this.video;
-    if (
-      !hls ||
-      !video ||
-      (this.status !== "live" && this.status !== "delay")
-    ) {
+    if (!video) return;
+    // #69: info playback terkini (pos/buffer/edge/window) SELALU di-refresh
+    // tiap detik — terpisah dari logika status di bawah, karena kontrol
+    // play/pause + tampilan waktu butuh datanya di semua state sesi berjalan.
+    this.updatePlaybackInfo();
+    const hls = this.hls;
+    if (!hls || (this.status !== "live" && this.status !== "delay")) {
       return;
     }
     const edge = hls.liveSyncPosition;
@@ -512,16 +655,13 @@ export class StreamHealth {
     if (video.currentTime <= 0) return;
     const delay = Math.max(0, edge - video.currentTime);
 
-    // #66 (15 Okt 2026): seek manual "nudge" DIHAPUS. Pola #60 (seek tiap
-    // kali delay < 2 dtk atau > 15 dtk) adalah akar buffering 80%: tiap seek
-    // menginvalidasi buffer internal hls.js → siklus rebuffer tanpa henti.
-    // Offset anti-buffering kini dijaga NATIF oleh hls.js
-    // (liveSyncDuration: 5, liveMaxLatencyDuration: 30). Satu-satunya seek
-    // yang tersisa: darurat > 60 dtk tertinggal (mis. setelah stall sangat
-    // panjang) → lompat ke posisi aman. Ini jarang terjadi dan tidak
-    // mengganggu operasi normal.
-    if (delay > EXTREME_DRIFT_SEC) {
-      this.emergencyResync();
+    // #68 (15 Okt 2026): emergencyResync() #66 DIHAPUS — seek ke (edge−6)
+    // bila drift > 60 dtk adalah bentuk lain "mengejar edge" (buffer tipis →
+    // rebuffer). Kebijakan final ala situs Bekasi: player TIDAK PERNAH
+    // mengejar live edge; gap dibiarkan membesar. Satu-satunya seek yang
+    // tersisa: PENJAGA JENDELA DVR di bawah — hanya bila posisi play hampir
+    // kedaluwarsa dari playlist (data-driven), target tetap JAUH dari tepi.
+    if (this.dvrWindowGuard()) {
       return;
     }
 
@@ -538,30 +678,97 @@ export class StreamHealth {
   }
 
   /**
-   * #66 (15 Okt 2026): PENGGANTI applyIntentionalDelay. Seek DARURAT saja —
-   * dipanggil hanya bila player tertinggal > EXTREME_DRIFT_SEC dari live edge
-   * (mis. setelah stall sangat panjang). Melompat ke posisi aman
-   * (liveEdge − 6 dtk, selaras liveSyncDuration: 5). TIDAK dipanggil
-   * untuk drift normal — itu urusan hls.js.
+   * #68 — PENJAGA JENDELA DVR (pengganti emergencyResync #66).
+   * Untuk stream LIVE, playlist adalah sliding window: fragmen lama
+   * kedaluwarsa dan hilang. Karena player #68 TIDAK PERNAH mengejar live
+   * edge, posisi play bisa (sangat jarang, setelah stall panjang beruntun)
+   * mendekati batas kedaluwarsa. Guard ini SATU-SATUNYA seek yang tersisa:
+   *   - trigger: sisa jendela di belakang posisi play < DVR_GUARD_MARGIN_SEC
+   *     (data NYATA dari level.details.fragments — bukan timer, bukan tebakan);
+   *   - target: edge − DVR_SAFE_BEHIND_SEC (TETAP JAUH dari tepi, cushion
+   *     tebal — bukan "mengejar edge"), dijepit agar di dalam jendela.
+   * Mengembalikan true bila melakukan seek (tickDelay berhenti di sini).
    */
-  private emergencyResync(): void {
+  private dvrWindowGuard(): boolean {
     const hls = this.hls;
     const video = this.video;
-    if (!hls || !video) return;
+    if (!hls || !video) return false;
+    const level = hls.levels?.[hls.currentLevel];
+    const frags = level?.details?.fragments;
+    if (!frags || frags.length === 0) return false;
     const edge = hls.liveSyncPosition;
-    if (typeof edge !== "number" || !Number.isFinite(edge) || edge <= 0) return;
+    if (typeof edge !== "number" || !Number.isFinite(edge) || edge <= 0) {
+      return false;
+    }
 
-    const target = Math.max(0, edge - EMERGENCY_RESYNC_OFFSET_SEC);
+    const windowStart = frags[0].start;
+    const pos = video.currentTime;
+    // Masih aman: lebih dari margin di dalam jendela → tidak usah apa-apa.
+    if (pos > windowStart + DVR_GUARD_MARGIN_SEC) return false;
+
+    // Hampir kedaluwarsa: lompat SEKALI ke posisi aman yang tetap jauh
+    // dari tepi. Jepit ke dalam jendela agar tidak seek ke posisi basi.
+    const target = Math.max(
+      windowStart + DVR_GUARD_MARGIN_SEC,
+      edge - DVR_SAFE_BEHIND_SEC,
+    );
+    if (target <= pos) return false; // tidak ada posisi lebih baik — diam.
     try {
       video.currentTime = target;
       this.pushLog(
         "warn",
-        `Resync darurat: tertinggal > ${EXTREME_DRIFT_SEC} dtk, lompat ke ` +
-          `posisi aman (${EMERGENCY_RESYNC_OFFSET_SEC} dtk di belakang live edge).`,
+        `Penjaga DVR: posisi hampir kedaluwarsa dari playlist ` +
+          `(sisa jendela ${(pos - windowStart).toFixed(1)} dtk) — lompat ` +
+          `ke ${DVR_SAFE_BEHIND_SEC} dtk di belakang live edge ` +
+          `(tetap jauh dari tepi, bukan mengejar edge).`,
       );
+      return true;
     } catch {
       // seek gagal — biarkan hls.js yang mengatur.
+      return false;
     }
+  }
+
+  /**
+   * #69: baca posisi/buffer/edge/window terkini dari <video> + hls.js.
+   * Dipanggil tiap 1 dtk oleh tickDelay(). UI me-render dari snapshot —
+   * tidak ada pembacaan video langsung di komponen (konsisten §4).
+   */
+  private updatePlaybackInfo(): void {
+    const video = this.video;
+    if (!video) return;
+    let bufStart = -1;
+    let bufEnd = -1;
+    try {
+      const b = video.buffered;
+      if (b.length > 0) {
+        bufStart = b.start(0);
+        bufEnd = b.end(b.length - 1);
+      }
+    } catch {
+      // buffered tak terbaca — biarkan −1 (jujur).
+    }
+    const hls = this.hls;
+    const edge =
+      hls && typeof hls.liveSyncPosition === "number"
+        ? hls.liveSyncPosition
+        : -1;
+    this.playback = {
+      pos: video.currentTime,
+      bufStart,
+      bufEnd,
+      edge,
+      windowStart: this.dvrWindowStart(),
+    };
+  }
+
+  /** #69: awal sliding window playlist (frags[0].start); −1 bila tak diketahui. */
+  private dvrWindowStart(): number {
+    const hls = this.hls;
+    const frags = hls?.levels?.[hls.currentLevel]?.details?.fragments;
+    if (!frags || frags.length === 0) return -1;
+    const s = frags[0].start;
+    return typeof s === "number" && Number.isFinite(s) ? s : -1;
   }
 
   /** Estimasi fps dari delta totalVideoFrames (Chromium). */
@@ -586,6 +793,54 @@ export class StreamHealth {
       this.emit();
     } catch {
       // getVideoPlaybackQuality tidak tersedia — fps tetap null ("–").
+    }
+  }
+
+  /**
+   * #68: satu sampel telemetri playback → ring buffer.
+   * Hanya dicatat saat status live/delay/buffering (sesi berjalan).
+   * bufStart/bufEnd/edge = −1 bila tak tersedia saat itu (jujur, bukan nol).
+   */
+  private tickTelemetry(): void {
+    const hls = this.hls;
+    const video = this.video;
+    if (
+      !video ||
+      (this.status !== "live" &&
+        this.status !== "delay" &&
+        this.status !== "buffering")
+    ) {
+      return;
+    }
+    let bufStart = -1;
+    let bufEnd = -1;
+    try {
+      const b = video.buffered;
+      if (b.length > 0) {
+        bufStart = b.start(0);
+        bufEnd = b.end(b.length - 1);
+      }
+    } catch {
+      // buffered tak terbaca — biarkan −1.
+    }
+    const edge =
+      hls && typeof hls.liveSyncPosition === "number"
+        ? hls.liveSyncPosition
+        : -1;
+    const pos = video.currentTime;
+    this.telemetry.push({
+      t: Date.now(),
+      pos,
+      bufStart,
+      bufEnd,
+      edge,
+      delay: edge >= 0 ? edge - pos : -1,
+      gap: bufEnd >= 0 ? bufEnd - pos : -1,
+      stalls: this.metrics.stalls,
+      status: this.status,
+    });
+    if (this.telemetry.length > TELEMETRY_MAX) {
+      this.telemetry.splice(0, this.telemetry.length - TELEMETRY_MAX);
     }
   }
 
@@ -653,12 +908,14 @@ export class StreamHealth {
       this.delayTimer,
       this.uptimeTimer,
       this.fpsTimer,
+      this.telemetryTimer,
       this.offlineTimer,
     ];
     for (const t of timers) {
       if (t !== null) clearInterval(t);
     }
     this.delayTimer = this.uptimeTimer = this.fpsTimer = null;
+    this.telemetryTimer = null;
     if (this.offlineTimer !== null) {
       clearTimeout(this.offlineTimer);
       this.offlineTimer = null;
@@ -668,6 +925,8 @@ export class StreamHealth {
   private snapshot(): StreamSnapshot {
     return {
       status: this.status,
+      paused: this.paused,
+      playback: { ...this.playback },
       delaySec: this.delaySec,
       attempt: this.attempt,
       maxAttempts: BACKOFF_MS.length,

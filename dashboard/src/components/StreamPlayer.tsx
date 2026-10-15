@@ -24,8 +24,8 @@ function formatUptime(totalSec: number): string {
 }
 
 export function StreamPlayer({ session, camera }: Props) {
-  const { snap, attachVideo, retry } = session;
-  const { status, metrics } = snap;
+  const { snap, attachVideo, retry, guardDvrWindow } = session;
+  const { status, metrics, paused, playback } = snap;
   const playerRef = useRef<HTMLElement>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [metricsOpen, setMetricsOpen] = useState(false);
@@ -34,6 +34,8 @@ export function StreamPlayer({ session, camera }: Props) {
   // Ref callback STABIL (useCallback): inline arrow di prop `ref` dibuat
   // ulang tiap render → React detach/attach ulang → engine.attach() tiap
   // render → setStatus → re-render = INFINITE LOOP (temuan uji headless #60).
+  // (#69: state `paused` dibaca dari snapshot engine — engine memasang
+  // listener play/pause nyata di <video>, bukan tebakan UI.)
   const setVideoRefs = useCallback(
     (el: HTMLVideoElement | null) => {
       attachVideo(el);
@@ -43,7 +45,10 @@ export function StreamPlayer({ session, camera }: Props) {
   );
 
   // #60: deteksi kendaraan (YOLO26n, worker) — overlay di atas video.
-  const detection = useDetection(() => videoRef.current);
+  // #69: paused diteruskan agar loop inferensi berhenti saat video dijeda
+  // (frame sama berulang = buang CPU); overlay freeze otomatis via basis
+  // video.currentTime (#68) — tidak perlu logika tambahan di sini.
+  const detection = useDetection(() => videoRef.current, paused);
   const detVisible =
     detection.enabled && detection.status === "ready";
 
@@ -91,6 +96,76 @@ export function StreamPlayer({ session, camera }: Props) {
     }
   };
 
+  // #69 — KONTROL PLAYBACK.
+  // resume(): dipanggil tombol play + klik video. SEBELUM video.play(),
+  // penjaga jendela DVR dijalankan dulu: bila pause-nya lama sampai posisi
+  // hampir kedaluwarsa dari playlist, posisi dipindah SEKALI ke tempat aman
+  // (edge − 25 dtk, jauh dari tepi) — resume tidak pernah menabrak posisi
+  // basi → tidak ada seek brutal / rebuffer.
+  // pause(): video.pause() saja — overlay #68 memakai basis video.currentTime
+  // sehingga box ikut freeze otomatis; guard DVR tetap jalan di tickDelay
+  // selama pause agar titik resume selalu valid.
+  const resume = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !v.paused) return;
+    guardDvrWindow();
+    void v.play().catch(() => undefined);
+  }, [guardDvrWindow]);
+
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      resume();
+    } else {
+      v.pause();
+    }
+  }, [resume]);
+
+  // #69 — TAMPILAN WAKTU. Stream ini LIVE HLS (duration = Infinity) → tidak
+  // ada "durasi" klasik. Yang ditampilkan: jarak posisi play dari live edge.
+  const behindSec =
+    playback.edge >= 0 ? Math.max(0, Math.round(playback.edge - playback.pos)) : -1;
+  const timeText = paused
+    ? "DIJEDA"
+    : behindSec < 0
+      ? "–"
+      : behindSec <= 3
+        ? "LIVE"
+        : `−${behindSec} dtk dari live`;
+  const timeClass = paused
+    ? "paused"
+    : behindSec < 0
+      ? ""
+      : behindSec <= 3
+        ? "live"
+        : "behind";
+
+  // #69 — BAR JENDELA DVR (display-only, TANPA scrub): kebijakan #68 melarang
+  // seek manual user (tiap seek menginvalidasi buffer hls.js → rebuffer).
+  // Bar hanya menunjukkan posisi play dalam [windowStart, liveEdge].
+  const barPct =
+    playback.windowStart >= 0 && playback.edge > playback.windowStart
+      ? Math.min(
+          100,
+          Math.max(
+            0,
+            ((playback.pos - playback.windowStart) /
+              (playback.edge - playback.windowStart)) *
+              100,
+          ),
+        )
+      : 0;
+  const gapSec =
+    playback.bufEnd >= 0 ? Math.max(0, playback.bufEnd - playback.pos) : -1;
+  const pbTitle =
+    playback.edge < 0
+      ? "Info jendela DVR belum tersedia"
+      : `Posisi ${playback.pos.toFixed(1)} dtk · jendela DVR ` +
+        `${playback.windowStart.toFixed(0)}–${playback.edge.toFixed(0)} dtk` +
+        (gapSec >= 0 ? ` · buffer ${gapSec.toFixed(1)} dtk di depan` : "") +
+        " (tampilan saja — kebijakan #68: tanpa scrub/seek manual)";
+
   const bitrateText =
     metrics.bitrateMbps !== null ? `${metrics.bitrateMbps} Mbps` : "–";
   const resText =
@@ -113,10 +188,8 @@ export function StreamPlayer({ session, camera }: Props) {
         muted
         playsInline
         aria-label={`Stream ${camera.name}`}
-        onClick={(e) => {
-          const v = e.currentTarget;
-          if (v.paused) void v.play().catch(() => undefined);
-        }}
+        // #69: klik video = toggle putar/jeda (standar kontrol pemutar).
+        onClick={togglePlay}
       />
       <div className="vignette" aria-hidden="true" />
 
@@ -162,6 +235,40 @@ export function StreamPlayer({ session, camera }: Props) {
             Tanpa backend, metrik hanya dihitung selama sesi berjalan dan tidak
             disimpan. (§4 butir 5)
           </p>
+          {/* #68: bukti uji anti-buffering 10+ menit — log posisi play vs
+              ujung buffer vs live edge tiap 2 dtk (format JSON). Kriteria
+              lolos: tidak ada siklus buffering berulang dan kolom `gap`
+              (bufEnd − pos) tumbuh/stabil, bukan menyusut ke nol. */}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              const samples = session.getTelemetry();
+              const payload = {
+                program: "GODS EYE",
+                assignment: 68,
+                camera: camera.id,
+                exportedAt: new Date().toISOString(),
+                sampleIntervalSec: 2,
+                // Cara baca: tiap sampel = {t, pos, bufStart, bufEnd, edge,
+                // delay (edge−pos), gap (bufEnd−pos), stalls, status}.
+                samples,
+              };
+              const blob = new Blob([JSON.stringify(payload, null, 2)], {
+                type: "application/json",
+              });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `gods-eye-telemetry-${Date.now()}.json`;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Unduh log playback (JSON)
+          </button>
         </div>
       )}
 
@@ -265,6 +372,10 @@ export function StreamPlayer({ session, camera }: Props) {
       {detVisible && (
         <div className="det-chip ok" aria-live="polite">
           Deteksi: {detection.detFps !== null ? `${detection.detFps} fps` : "…"}
+          {/* #68: biaya inferensi + execution provider — diagnosis bottleneck
+              langsung dari screenshot (bukan tebakan). */}
+          {detection.inferMs !== null && ` · ${detection.inferMs}ms`}
+          {detection.provider !== null && ` · ${detection.provider}`}
           {Object.entries(detection.counts).map(([label, n]) => (
             <span key={label}>
               {" "}
@@ -288,6 +399,34 @@ export function StreamPlayer({ session, camera }: Props) {
       >
         ◎
       </button>
+      {/* #69: tombol putar/jeda — di kiri tombol deteksi. Ikon mengikuti
+          state video (event play/pause, bukan tebakan). */}
+      <button
+        id="playBtn"
+        type="button"
+        aria-label={paused ? "Putar stream" : "Jeda stream"}
+        aria-pressed={paused}
+        className={paused ? "is-paused" : ""}
+        onClick={togglePlay}
+      >
+        {paused ? "▶" : "❚❚"}
+      </button>
+      {/* #69: chip waktu — offset dari live edge (LIVE HLS: duration tak
+          terhingga, jadi ini "durasi" yang bermakna). timeText/timeClass
+          dari logika tampilan di atas (DIJEDA/LIVE/−N dtk dari live).
+          Tanpa aria-live: teks berubah tiap detik, akan membanjiri
+          screen reader bila diumumkan. */}
+      <div className={`play-time ${timeClass}`} title={pbTitle}>
+        {timeText}
+      </div>
+      {/* #69: progress bar jendela DVR — visual posisi play dalam
+          [windowStart..liveEdge] (barPct). Bukan scrubber (live): hanya
+          indikator, kebijakan #68 melarang seek manual. */}
+      <div className="dvr-bar" aria-hidden="true" title={pbTitle}>
+        <div className="dvr-track">
+          <div className="dvr-pos" style={{ left: `${barPct}%` }} />
+        </div>
+      </div>
       <button
         id="fsBtn"
         type="button"

@@ -1,28 +1,30 @@
-// Tracker kendaraan antar-frame — centroid sederhana (tanpa IoU).
-// Rujukan: assignment #60 — "Tracking antar-frame (centroid/IoU sederhana);
-// arah dari delta y". Assignment #62 (15 Okt 2026) menambahkan persistensi
-// temporal + smoothing agar box tidak kedip.
+// Tracker kendaraan antar-frame — centroid + prediksi velocity (constant-velocity).
+// Rujukan: assignment #60 (centroid/IoU sederhana; arah dari delta y),
+//   #62 (persistensi temporal + EMA smoothing anti-kedip),
+//   #67 (maxDistPx 90→200 untuk fps aktual ±4,3; minSeenToRender 2→1),
+//   #68 (prediksi gerakan: box diekstrapolasi pada frame-rate VIDEO di antara
+//        hasil deteksi yang jarang — akar "box tertinggal dari mobil").
 //
-// Cara kerja (sengaja sederhana agar mudah dipahami junior):
+// Cara kerja:
 //   1. Tiap deteksi diwakili titik tengah (centroid) bbox-nya.
-//   2. Deteksi dipasangkan ke track lama yang centroid-nya PALING DEKAT,
-//      selama jaraknya ≤ maxDistPx DAN labelnya sama (mobil≠motor).
-//      → pencocokan greedy, diurut dari confidence tertinggi.
+//   2. Deteksi dipasangkan ke track lama yang POSISI PREDIKSI-nya paling dekat
+//      (bukan posisi terakhir — prediksi = cx + vx*dt, ala langkah "predict"
+//      ByteTrack/Kalman yang disederhanakan), selama jarak ≤ maxDistPx DAN
+//      label sama (mobil≠motor). → greedy, confidence tertinggi dulu.
 //   3. Deteksi tanpa pasangan = kendaraan baru → track baru (id naik).
-//   4. Track yang N frame tidak terlihat = dihapus (kendaraan pergi).
-//   5. Arah = tanda delta y centroid dalam jendela riwayat:
-//      y membesar ke bawah (konvensi kanvas) → dy > 0 = "bawah".
+//   4. Tiap track menyimpan velocity (vx, vy; piksel per detik-WAKTU VIDEO)
+//      dari riwayat centroid, dihaluskan EMA + dijepit MAX_SPEED_PX_S.
+//   5. Track yang N frame tak terlihat = dihapus (kendaraan pergi).
+//   6. Arah = tanda delta y centroid dalam jendela riwayat.
 //
-// Anti-kedip (#62):
-//   a. Box TIDAK dirender dari raw detection, melainkan dari TRACKER —
-//      update() mengembalikan track yang masih dalam masa tenggang
-//      (graceFrames) walau frame ini tidak terdeteksi, memakai posisi
-//      terakhir (stale=true). → box bertahan 0,5–1 dtk setelah deteksi
-//      terakhir hilang, tidak muncul-hilang sepersekian detik.
-//   b. Track baru dirender hanya setelah terlihat ≥ minSeenToRender frame
-//      (track "terkonfirmasi") — cegah box pop-in dari 1 deteksi sesaat.
-//   c. Posisi bbox dihaluskan antar-frame (EMA, smoothAlpha) — box mengikuti
-//      kendaraan dengan mulus, tidak melompat mengikuti jitter model.
+// Anti-kedip (#62): box dirender dari TRACKER (bukan raw detection); track
+// dalam masa tenggang (graceFrames) tetap dirender di posisi TERAKHIR bila
+// tak ada info gerak — overlay-lah yang mengekstrapolasi (#68).
+//
+// Kenapa bukan library ByteTrack/DeepSORT (#68): diagnosis menunjukkan
+// asosiasi centroid sudah bekerja; masalahnya deteksi JARANG (0,1–4,3 fps)
+// sehingga box basi 1–10 dtk. Langkah "predict" Kalman itulah yang hilang —
+// diimplementasikan di sini ±30 baris, tanpa dependensi baru, tetap offline.
 
 import type { Detection, VehicleDirection } from "./types";
 
@@ -39,55 +41,77 @@ export interface TrackerOptions {
   historyLen: number;
   /**
    * #62: masa tenggang render — track yang tak terdeteksi frame ini TETAP
-   * dirender (posisi terakhir) selama missed ≤ graceFrames. 7 frame inferensi
-   * ≈ 1,6 dtk pada fps aktual ±4,3 (asumsi awal 0,7 dtk pada CAPTURE_FPS=10
-   * tidak tercapai di laptop Rama — model WASM ±230ms/inferensi).
+   * dirender (posisi terakhir) selama missed ≤ graceFrames.
    */
   graceFrames: number;
-  /** #62: track dirender hanya bila sudah terlihat ≥ N frame (terkonfirmasi). */
+  /** #62/#67: track dirender hanya bila sudah terlihat ≥ N frame. */
   minSeenToRender: number;
   /** #62: bobot EMA smoothing bbox — 0,65 = responsif tapi halus. */
   smoothAlpha: number;
+  /**
+   * #68: bobot EMA smoothing VELOCITY — 0,4 = velocity stabil, tidak
+   * melompat mengikuti jitter centroid model antar-frame.
+   */
+  velocityAlpha: number;
+  /**
+   * #68: jepit kecepatan (piksel/detik-waktu-video, ruang 1920×1080).
+   * Menolak outlier: centroid mismatch yang lolos maxDistPx tidak boleh
+   * menghasilkan velocity liar → prediksi tidak "terbang".
+   */
+  maxSpeedPxS: number;
 }
 
 export const DEFAULT_TRACKER_OPTIONS: TrackerOptions = {
   /**
-   * #67 (15 Okt 2026): 90 → 200. ASUMSI LAMA "10fps" SALAH — inferensi aktual
-   * di laptop Rama hanya ±4,3 fps (model WASM ±230ms), sehingga kendaraan
-   * bergerak ±2,3× LEBIH JAUH antar-frame inferensi dibanding asumsi 10fps.
-   * Dengan 90px, kendaraan cepat TIDAK PERNAH cocok ke track lama → track
-   * baru tiap frame → seen=1 terus → tidak pernah dirender (butuh 2) →
-   * "box jarang muncul". 200px = 90 × 2,3 (faktor koreksi fps), masih aman
-   * karena label harus sama (mobil≠motor) + greedy dari confidence tertinggi.
+   * #67 (15 Okt 2026): 90 → 200. Inferensi aktual di laptop Rama hanya
+   * ±4,3 fps (model WASM ±230ms), kendaraan bergerak ±2,3× lebih jauh
+   * antar-frame dibanding asumsi 10fps. 200px = 90 × 2,3, aman karena
+   * label harus sama + greedy dari confidence tertinggi.
+   * #68: jarak kini diukur ke POSISI PREDIKSI (bukan posisi terakhir),
+   * sehingga 200px tetap longgar untuk kendaraan cepat.
    */
   maxDistPx: 200,
-  ttlFrames: 10, // ≈2,3 dtk tak terlihat pada 4,3fps → dianggap pergi
+  ttlFrames: 10,
   minDyPx: 8, // di bawah ini = getaran centroid, bukan gerak nyata
   minSeenForDirection: 3, // cegah arah ngaco dari 1–2 frame
   historyLen: 8,
-  graceFrames: 7, // #62: box bertahan ±0,7 dtk setelah deteksi hilang
-  /**
-   * #67 (15 Okt 2026): 2 → 1. Permintaan eksplisit Rama: "ketika muncul di
-   * kamera, box bisa langsung muncul ga?" → YA. Track dirender sejak deteksi
-   * PERTAMA, tanpa menunggu konfirmasi frame kedua. Tradeoff jujur: box dari
-   * 1 deteksi sesaat (false positive) kini ikut tampil — tapi graceFrames
-   * tetap menstabilkan, dan Rama bisa menaikkan threshold via slider bila
-   * box palsu mengganggu.
-   */
+  graceFrames: 7,
+  /** #67: 2 → 1 — box langsung muncul sejak deteksi pertama (minta Rama). */
   minSeenToRender: 1,
   smoothAlpha: 0.65, // #62: EMA — 65% posisi baru, 35% posisi lama
+  velocityAlpha: 0.4, // #68: EMA velocity — 40% instan, 60% riwayat
+  maxSpeedPxS: 800, // #68: ~2,4 dtk melintasi lebar frame 1920px
 };
 
-/** Detection yang sudah punya identitas track + arah (siap digambar). */
+/**
+ * #68: batas ekstrapolasi overlay (detik-waktu-video). Di luar ini, overlay
+ * menggambar posisi beku (tidak mengekstrapolasi ke entah ke mana).
+ * Diekspor agar overlay & uji memakai angka yang sama.
+ */
+export const PREDICT_CAP_S = 3;
+
+/** Detection yang sudah punya identitas track + arah + velocity (siap digambar). */
 export interface TrackedDetection extends Detection {
   trackId: number;
   direction: VehicleDirection;
   /**
    * #62: true = posisi TERAKHIR dari track dalam masa tenggang (frame ini
-   * tidak ada deteksi mentah yang cocok). Overlay boleh menggambarnya
-   * sedikit redup agar jujur bahwa ini prediksi, bukan deteksi segar.
+   * tidak ada deteksi mentah yang cocok). Overlay menggambarnya sedikit
+   * redup agar jujur bahwa ini prediksi, bukan deteksi segar.
    */
   stale: boolean;
+  /**
+   * #68: velocity centroid (piksel per detik-WAKTU VIDEO). Overlay
+   * mengekstrapolasi bbox pada frame-rate video: pos = bbox + v*dt.
+   */
+  vx: number;
+  vy: number;
+  /**
+   * #68: framePts (video.currentTime) saat track TERAKHIR dicocokkan
+   * deteksi segar. Overlay: dt = video.currentTime - framePts. Untuk track
+   * stale ini pts LAMA — prediksi tetap jalan selama masa tenggang.
+   */
+  framePts: number;
 }
 
 interface Track {
@@ -98,11 +122,16 @@ interface Track {
   bbox: [number, number, number, number];
   cx: number;
   cy: number;
-  history: Array<{ cx: number; cy: number }>;
+  history: Array<{ cx: number; cy: number; pts: number }>;
   seen: number;
   missed: number;
   /** Confidence deteksi mentah terakhir (untuk chip label saat stale). */
   lastConfidence: number;
+  /** #68: velocity (px/detik-waktu-video), EMA-smoothed. */
+  vx: number;
+  vy: number;
+  /** #68: framePts saat terakhir dicocokkan deteksi segar. */
+  lastSeenPts: number;
 }
 
 function centroid(bbox: [number, number, number, number]): {
@@ -126,6 +155,25 @@ function smoothBox(
   ];
 }
 
+/**
+ * #68: ekstrapolasi bbox MURNI (tanpa DOM) — dipakai overlay TIAP frame
+ * video (rAF 60fps) agar box mengikuti kendaraan di antara hasil deteksi
+ * yang jarang (0,1–4,3 fps). dt dijepit [0, PREDICT_CAP_S]; di luar itu
+ * overlay menggambar posisi beku.
+ */
+export function predictBbox(
+  bbox: [number, number, number, number],
+  vx: number,
+  vy: number,
+  dtSec: number,
+): [number, number, number, number] {
+  const dt = Math.min(Math.max(dtSec, 0), PREDICT_CAP_S);
+  if (dt === 0 || (vx === 0 && vy === 0)) return bbox;
+  const dx = vx * dt;
+  const dy = vy * dt;
+  return [bbox[0] + dx, bbox[1] + dy, bbox[2], bbox[3]];
+}
+
 export class CentroidTracker {
   private tracks: Track[] = [];
   private nextId = 1;
@@ -139,12 +187,11 @@ export class CentroidTracker {
   }
 
   /**
-   * Satu frame deteksi → track ber-ID + ber-arah, SIAP RENDER.
-   * Kontrak #62: yang dikembalikan BUKAN raw detection — track dalam masa
-   * tenggang (stale) ikut disertakan dengan posisi terakhirnya, sehingga
-   * overlay tidak pernah melihat box muncul-hilang sepersekian detik.
+   * Satu frame deteksi → track ber-ID + ber-arah + ber-velocity, SIAP RENDER.
+   * @param framePts video.currentTime saat frame DITANGKAP (bukan saat
+   *        inferensi selesai) — basis waktu velocity & prediksi.
    */
-  update(detections: Detection[]): TrackedDetection[] {
+  update(detections: Detection[], framePts: number): TrackedDetection[] {
     const matched = new Set<Track>();
 
     // Urut confidence tertinggi dulu: kotak paling yakin dapat pasangan dulu.
@@ -157,7 +204,12 @@ export class CentroidTracker {
 
       for (const t of this.tracks) {
         if (matched.has(t) || t.label !== det.label) continue;
-        const d = Math.hypot(t.cx - cx, t.cy - cy);
+        // #68: cocokkan ke POSISI PREDIKSI pada framePts ini, bukan posisi
+        // terakhir — kendaraan sudah bergerak sejak deteksi sebelumnya.
+        const pdt = Math.min(Math.max(framePts - t.lastSeenPts, 0), PREDICT_CAP_S);
+        const px = t.cx + t.vx * pdt;
+        const py = t.cy + t.vy * pdt;
+        const d = Math.hypot(px - cx, py - cy);
         if (d < bestDist) {
           bestDist = d;
           best = t;
@@ -169,12 +221,25 @@ export class CentroidTracker {
         matched.add(best);
         best.bbox = smoothBox(best.bbox, det.bbox, this.opts.smoothAlpha);
         const c = centroid(best.bbox);
+        // #68: velocity dari perpindahan centroid (smoothed) per detik-waktu-video.
+        const dt = framePts - best.lastSeenPts;
+        if (dt > 1e-3) {
+          const ivx = (c.cx - best.cx) / dt;
+          const ivy = (c.cy - best.cy) / dt;
+          // Jepit dulu (tolak outlier mismatch), baru EMA.
+          const sp = Math.hypot(ivx, ivy);
+          const k = sp > this.opts.maxSpeedPxS ? this.opts.maxSpeedPxS / sp : 1;
+          const a = this.opts.velocityAlpha;
+          best.vx += a * (ivx * k - best.vx);
+          best.vy += a * (ivy * k - best.vy);
+        }
         best.cx = c.cx;
         best.cy = c.cy;
         best.seen += 1;
         best.missed = 0;
         best.lastConfidence = det.confidence;
-        best.history.push({ cx: best.cx, cy: best.cy });
+        best.lastSeenPts = framePts;
+        best.history.push({ cx: best.cx, cy: best.cy, pts: framePts });
         if (best.history.length > this.opts.historyLen) best.history.shift();
       } else {
         // Kendaraan baru — bbox awal = deteksi mentah (belum ada yang dihaluskan).
@@ -185,10 +250,13 @@ export class CentroidTracker {
           bbox: [...det.bbox] as [number, number, number, number],
           cx,
           cy,
-          history: [{ cx, cy }],
+          history: [{ cx, cy, pts: framePts }],
           seen: 1,
           missed: 0,
           lastConfidence: det.confidence,
+          vx: 0,
+          vy: 0,
+          lastSeenPts: framePts,
         };
         this.tracks.push(track);
         matched.add(track);
@@ -202,7 +270,8 @@ export class CentroidTracker {
     });
 
     // Render dari TRACKER: track terkonfirmasi (seen cukup) yang cocok frame
-    // ini ATAU masih dalam masa tenggang (stale, posisi terakhir).
+    // ini ATAU masih dalam masa tenggang (stale). #68: tiap hasil membawa
+    // vx/vy + framePts (terakhir terlihat) agar overlay bisa prediksi.
     const result: TrackedDetection[] = [];
     for (const t of this.tracks) {
       if (t.seen < this.opts.minSeenToRender) continue;
@@ -217,6 +286,9 @@ export class CentroidTracker {
         trackId: t.id,
         direction: this.classifyDirection(t),
         stale: isStale,
+        vx: t.vx,
+        vy: t.vy,
+        framePts: t.lastSeenPts,
       });
     }
     return result;

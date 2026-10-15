@@ -8,6 +8,7 @@
 
 import type { Detection, DetectionFrame, Detector } from "./types";
 import type { WorkerRequest, WorkerResponse } from "./workerProtocol";
+import { CAPTURE_RESIZE_HEIGHT, CAPTURE_RESIZE_WIDTH } from "./vehicleConfig";
 
 export class WorkerVehicleDetector implements Detector {
   private worker: Worker | null = null;
@@ -25,6 +26,28 @@ export class WorkerVehicleDetector implements Detector {
    * menghitung fps deteksi secara jujur.
    */
   public lastSkipped = false;
+  /**
+   * #68: true bila detect() terakhir TIMEOUT (worker tidak membalas dalam
+   * TIMEOUT_MS). Dulu timeout dihitung sebagai "hasil" → fps palsu 0,1 +
+   * overlay dibersihkan tiap 8 dtk. Kini hook mengabaikannya seperti skip.
+   */
+  public lastTimedOut = false;
+  /**
+   * #68: execution provider ONNX terpilih ("webgl" | "wasm") — dari pesan
+   * "ready" worker. Tampil di chip UI (pengukuran, bukan asumsi).
+   */
+  public lastProvider: string | null = null;
+  /**
+   * #68: biaya putaran worker terakhir (ms, dari DetectionFrame.inferMs) —
+   * ditampilkan di chip UI untuk diagnosis bottleneck.
+   */
+  public lastInferMs: number | null = null;
+  /**
+   * #68: 8 dtk → 30 dtk. Timeout BUKAN lagi "hasil gagal rutin": dengan
+   * respons "dropped" eksplisit dari worker, timeout kini hanya jaring
+   * pengaman untuk worker yang benar-benar macet.
+   */
+  private static readonly TIMEOUT_MS = 30_000;
   /**
    * #65: ambang yang diset SEBELUM worker ada (mis. slider digeser saat
    * status masih "loading") — dikirim ke worker begitu init() membuatnya.
@@ -97,23 +120,50 @@ export class WorkerVehicleDetector implements Detector {
    * TIDAK melempar: galat → [] (kontrak).
    */
   async detect(frame: ImageData | HTMLVideoElement): Promise<Detection[]> {
-    // Default: BUKAN hasil inferensi (di-skip / video belum ada data) —
-    // hook memakai flag ini agar fps & overlay hanya dari hasil worker nyata.
+    // Default: BUKAN hasil inferensi (di-skip / timeout / video belum ada
+    // data) — hook memakai flag ini agar fps & overlay hanya dari hasil
+    // worker nyata.
     this.lastSkipped = true;
+    this.lastTimedOut = false;
     try {
       if (this.disposed || !this.worker || this.inflight) return [];
       if (!(frame instanceof HTMLVideoElement)) return [];
       if (frame.readyState < 2 || frame.videoWidth === 0) return [];
       this.lastSkipped = false; // lolos semua guard → inferensi beneran
 
-      const bitmap = await createImageBitmap(frame);
+      // #68: tangkap frame dalam resolusi lebih kecil (960×540, bukan
+      // 1920×1080). Dua penghematan: (a) transfer ImageBitmap antar-thread
+      // 8MB → ±2MB per frame; (b) createImageBitmap di main thread lebih
+      // cepat. TIDAK mengurangi detail input model: letterbox worker tetap
+      // menskala ke 640×640 (isi efektif 640×360 — sama seperti dari 1080p),
+      // hanya langkah resampling-nya dua tahap. Fallback ke capture penuh
+      // bila browser tak mendukung opsi resize.
+      let bitmap: ImageBitmap;
+      try {
+        bitmap = await createImageBitmap(frame, {
+          resizeWidth: CAPTURE_RESIZE_WIDTH,
+          resizeHeight: CAPTURE_RESIZE_HEIGHT,
+          resizeQuality: "high",
+        });
+      } catch {
+        bitmap = await createImageBitmap(frame);
+      }
       this.inflight = true;
       const result = await new Promise<DetectionFrame>((resolve) => {
-        // Pengaman: worker tak membalas dalam 8 dtk → anggap gagal, jangan macet.
+        // Pengaman: worker tak membalas dalam TIMEOUT_MS → anggap macet.
+        // #68: JANGAN hitung sebagai hasil (lastTimedOut) — hook akan
+        // mengabaikannya agar fps jujur dan overlay tidak dibersihkan.
         const timer = window.setTimeout(() => {
           this.pendingResult = null;
-          resolve({ cameraId: "", framePts: 0, wallTime: 0, detections: [] });
-        }, 8000);
+          this.lastTimedOut = true;
+          resolve({
+            cameraId: "",
+            framePts: 0,
+            wallTime: 0,
+            detections: [],
+            inferMs: 0,
+          });
+        }, WorkerVehicleDetector.TIMEOUT_MS);
         this.pendingResult = (f) => {
           window.clearTimeout(timer);
           resolve(f);
@@ -121,13 +171,19 @@ export class WorkerVehicleDetector implements Detector {
         const req: WorkerRequest = {
           type: "detect",
           frame: bitmap,
-          srcW: frame.videoWidth,
-          srcH: frame.videoHeight,
+          // #68: dimensi BITMAP AKTUAL (bisa 960×540 bila resize aktif) —
+          // worker me-letterbox dari ukuran ini, bukan ukuran video.
+          srcW: bitmap.width,
+          srcH: bitmap.height,
           framePts: frame.currentTime,
           cameraId: "",
         };
         this.worker?.postMessage(req, [bitmap]);
       });
+      // #68: catat biaya worker untuk diagnosis — null bila timeout/drop/skip
+      // (bukan hasil inferensi nyata).
+      this.lastInferMs =
+        this.lastTimedOut || this.lastSkipped ? null : (result.inferMs ?? null);
       return result.detections;
     } catch {
       return [];
@@ -144,6 +200,8 @@ export class WorkerVehicleDetector implements Detector {
 
   private onWorkerMessage(msg: WorkerResponse): void {
     if (msg.type === "ready") {
+      // #68: catat execution provider terpilih untuk chip UI.
+      this.lastProvider = msg.provider ?? null;
       this.readyResolve?.();
       this.readyResolve = this.readyReject = null;
     } else if (msg.type === "init-error") {
@@ -154,6 +212,20 @@ export class WorkerVehicleDetector implements Detector {
       const resolve = this.pendingResult;
       this.pendingResult = null;
       resolve?.(msg.frame);
+    } else if (msg.type === "dropped") {
+      // #68: worker menolak frame karena masih sibuk — BUKAN hasil inferensi.
+      // Tandai skipped agar hook mengabaikannya (dulu: menggantung sampai
+      // timeout → dihitung "hasil" → fps palsu 0,1).
+      this.lastSkipped = true;
+      const resolve = this.pendingResult;
+      this.pendingResult = null;
+      resolve?.({
+        cameraId: "",
+        framePts: 0,
+        wallTime: 0,
+        detections: [],
+        inferMs: 0,
+      });
     }
   }
 

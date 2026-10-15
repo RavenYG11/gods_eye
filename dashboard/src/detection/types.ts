@@ -36,6 +36,13 @@ export interface DetectionFrame {
   framePts: number; // ← frame_pts (presentation timestamp stream)
   wallTime: number; // ← wall_time
   detections: Detection[];
+  /**
+   * #68: DIAGNOSTIK INTERNAL (bukan skema Broto — tidak diserialisasi ke JSON).
+   * Milidetik yang dihabiskan worker untuk SATU putaran detect (termasuk
+   * letterbox + inferensi ONNX). Ditampilkan di chip UI agar bottleneck
+   * fps bisa dibaca langsung dari screenshot Rama berikutnya.
+   */
+  inferMs: number;
 }
 
 /** Kontrak yang WAJIB dipenuhi implementasi model apapun (YOLO26n, PicoDet, dst). */
