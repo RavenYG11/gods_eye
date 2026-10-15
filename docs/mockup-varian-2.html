@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<!--
+================================================================================
+GODS EYE v0.1 — MOCKUP  ·  VARIAN 2 "RUANG KONTROL"  ·  Prapto (UI/UX Designer)
+Assignment #51  ·  15 Okt 2026  ·  File: docs/mockup-varian-2.html
+--------------------------------------------------------------------------------
+ARAH VISUAL (beda jelas dari Varian 1):
+  Varian 1 = dashboard operasional gelap yang tenang (kartu, header minimal,
+  badge sebagai pill di pojok video).
+  Varian 2 = konsol RUANG KONTROL ala wall-monitor CCTV: hitam pekat nyaris
+  tanpa kartu (tanpa bayangan/border radius besar), telemetri real-time di
+  rel samping (bukan tooltip), log koneksi ala terminal, status stream sebagai
+  RIBBON tebal di bingkai bawah video + cahaya tepi (bukan badge pill), OSD
+  monospace dengan bingkai garis, tipografi "mesin" (uppercase, letter-spacing
+  lebar). Terasa seperti mengawasi dari control room — imersif, tegas.
+
+SCOPE v0.1 DIKUNCI (sama seperti #50; rujukan docs/arsitektur.md):
+  - Web app stream viewer SATU kamera CCTV Bekasi (HLS 1080p 16:9).
+  - Object detection DILARANG tampil sebagai fitur aktif → tidak ada di sini.
+  - Tanpa rekaman default (tanpa tombol record/snapshot).
+  - Face recognition OUT OF SCOPE permanen → tidak ada.
+  - Target deploy localhost.
+  - 7 state stream yang sama (tabel status §4): LOADING, LIVE, DELAY,
+    BUFFERING, RECONNECTING, OFFLINE, ERROR.
+
+LAYOUT (kiri → kanan, atas → bawah):
+  1. Top rail tipis — wordmark, jam WIB, session uptime, chip "localhost".
+  2. Grid: kiri = STAGE (player 16:9 besar + kartu identitas kamera di bawahnya);
+     kanan = REL TELEMETRI: panel "TELEMETRI STREAM" (status, bitrate bar, fps,
+     stall, reconnect, uptime — selalu terlihat, §4 butir 5) + panel
+     "LOG KONEKSI" (terminal, baris terbaru di bawah, max 12).
+  3. Player: ribbon status selebar video di bingkai bawah (warna per state),
+     "REC"-dot merah? TIDAK — tidak ada perekaman (pagar §5); sebagai gantinya
+     dot status di pojok kiri atas mengikuti warna state. OSD timestamp kanan
+     atas berbingkai. Tombol fullscreen kanan bawah.
+  4. Panel "KONSOL SIMULASI" — KHUSUS MOCKUP (berlabel jelas, TIDAK dibangun
+     di aplikasi): tombol pindah state.
+
+KOMPONEN → PEMETAAN IMPLEMENTASI (untuk Gunet, bila Rama memilih varian ini):
+  - .toprail        → App.tsx (AppShell)
+  - .player         → components/StreamPlayer.tsx (video + overlay status)
+  - .ribbon/#rText → bagian StreamPlayer.tsx (status strip, satu sumber kebenaran — §4)
+  - .rail/.panel   → components/StreamTelemetry.tsx (bitrate, fps, stall,
+                     reconnect, uptime) + components/ConnectionLog.tsx
+  - .camcard       → components/CameraSelector.tsx (disabled, 1 item)
+  - logika badge   → lib/streamHealth.ts (mesin status + auto-reconnect)
+
+AKSESIBILITAS:
+  - Perubahan status diumumkan via aria-live="polite"; semua kontrol <button>/
+    <select> asli (keyboard OK); kontras ≥ 4.5:1 pada teks utama.
+  - Responsif: <900px rel telemetri pindah ke bawah stage; <640px ribbon & OSD
+    mengecil.
+
+YANG SENGAJA TIDAK ADA (pagar §5): sama seperti Varian 1 — tanpa box deteksi,
+tanpa tombol record/snapshot, tanpa identifikasi wajah, URL stream tidak
+tertulis di mockup (hidup di config/cameras.ts).
+================================================================================
+-->
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GODS EYE — Varian 2 “Ruang Kontrol” (mockup)</title>
+<style>
+  :root{
+    --bg:#020409; --bg2:#05080e; --panel:#070b12; --line:#1a2233;
+    --text:#e8ecf4; --muted:#8b94a7; --faint:#5b6373;
+    --live:#4ade80; --delay:#fbbf24; --buf:#38bdf8;
+    --recon:#fb923c; --off:#8b94a7; --err:#f87171;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --font:"Arial Narrow",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);
+       min-height:100vh;display:flex;flex-direction:column;font-size:14px}
+  button,select{font-family:var(--font)}
+  :focus-visible{outline:2px solid var(--buf);outline-offset:2px}
+
+  /* garis scan halus ala monitor CCTV — murni dekoratif */
+  .scan{position:fixed;inset:0;z-index:60;pointer-events:none;opacity:.5;
+        background:repeating-linear-gradient(0deg,rgba(255,255,255,.018) 0 1px,
+        transparent 1px 3px)}
+
+  .app{flex:1;display:flex;flex-direction:column;max-width:1440px;width:100%;
+       margin:0 auto;padding:0 14px 28px}
+
+  /* ---------- top rail ---------- */
+  .toprail{display:flex;align-items:center;justify-content:space-between;
+           padding:10px 4px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;
+         letter-spacing:.22em;font-size:14px}
+  .brand .sq{width:9px;height:9px;background:var(--live);
+             box-shadow:0 0 10px var(--live)}
+  .brand small{color:var(--faint);letter-spacing:.1em;font-size:10px}
+  .tr-right{display:flex;align-items:center;gap:14px;font-family:var(--mono);
+            font-size:12px;color:var(--muted)}
+  .tr-right .pill{border:1px solid var(--line);padding:3px 10px;font-size:10px;
+                  letter-spacing:.14em;color:var(--text);background:var(--panel)}
+  .tr-right b{color:var(--text);font-weight:600}
+
+  /* ---------- grid utama ---------- */
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;
+        padding-top:14px;align-items:start}
+  .stage{display:flex;flex-direction:column;gap:14px;min-width:0}
+
+  /* ---------- player ---------- */
+  .player{position:relative;width:100%;aspect-ratio:16/9;background:#000;
+          overflow:hidden;border:1px solid var(--line)}
+  .player canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .player .vg{position:absolute;inset:0;pointer-events:none;
+              background:radial-gradient(ellipse at center,transparent 58%,rgba(0,0,0,.55) 100%)}
+
+  /* cahaya tepi mengikuti state (pengganti badge pill) */
+  .player[data-state="live"]   {box-shadow:0 0 0 1px rgba(74,222,128,.5),0 0 26px rgba(74,222,128,.12)}
+  .player[data-state="delay"]  {box-shadow:0 0 0 1px rgba(251,191,36,.55),0 0 26px rgba(251,191,36,.12)}
+  .player[data-state="buffering"]{box-shadow:0 0 0 1px rgba(56,189,248,.55),0 0 26px rgba(56,189,248,.12)}
+  .player[data-state="reconnecting"]{box-shadow:0 0 0 1px rgba(251,146,60,.55),0 0 26px rgba(251,146,60,.12)}
+  .player[data-state="error"]  {box-shadow:0 0 0 1px rgba(248,113,113,.6),0 0 26px rgba(248,113,113,.14)}
+  .player[data-state="offline"]{box-shadow:0 0 0 1px rgba(139,148,167,.4)}
+  .player[data-state="loading"]{box-shadow:0 0 0 1px rgba(139,148,167,.4)}
+
+  /* dot status pojok kiri atas */
+  .sdot{position:absolute;top:12px;left:12px;z-index:6;display:flex;align-items:center;
+        gap:8px;font-family:var(--mono);font-size:11px;letter-spacing:.14em;font-weight:700;
+        background:rgba(2,4,9,.72);padding:7px 12px;border:1px solid var(--line)}
+  .sdot i{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
+  .sdot.st-live{color:var(--live)} .sdot.st-live i{animation:pulse 1.6s infinite}
+  .sdot.st-delay{color:var(--delay)} .sdot.st-buffering{color:var(--buf)}
+  .sdot.st-reconnecting{color:var(--recon)} .sdot.st-reconnecting i{animation:blink .8s infinite}
+  .sdot.st-offline{color:var(--off)} .sdot.st-error{color:var(--err)}
+  .sdot.st-error i{animation:blink .8s infinite} .sdot.st-loading{color:var(--off)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+
+  /* OSD berbingkai */
+  .osd{position:absolute;top:12px;right:12px;z-index:5;font-family:var(--mono);
+       font-size:11px;letter-spacing:.06em;color:var(--text);
+       background:rgba(2,4,9,.72);padding:7px 10px;border:1px solid var(--line);
+       pointer-events:none}
+
+  /* ribbon status selebar video di bingkai bawah */
+  .ribbon{position:absolute;left:0;right:0;bottom:0;z-index:6;
+          font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;font-weight:700;
+          padding:9px 14px;border-top:2px solid;white-space:nowrap;overflow:hidden;
+          text-overflow:ellipsis}
+  .ribbon.st-live{color:#052e16;background:rgba(74,222,128,.92);border-color:#22c55e}
+  .ribbon.st-delay{color:#451a03;background:rgba(251,191,36,.94);border-color:#f59e0b}
+  .ribbon.st-buffering{color:#082f49;background:rgba(56,189,248,.94);border-color:#0ea5e9}
+  .ribbon.st-reconnecting{color:#431407;background:rgba(251,146,60,.94);border-color:#f97316}
+  .ribbon.st-offline{color:#111827;background:rgba(139,148,167,.94);border-color:#6b7280}
+  .ribbon.st-error{color:#450a0a;background:rgba(248,113,113,.94);border-color:#ef4444}
+  .ribbon.st-loading{color:#111827;background:rgba(139,148,167,.94);border-color:#6b7280}
+  .ribbon.delay-mode{bottom:30px} /* bergeser di atas strip delay */
+
+  #delayStrip{position:absolute;left:0;right:0;bottom:0;z-index:5;display:none;
+              font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+              color:var(--delay);background:rgba(69,26,3,.85);
+              padding:7px 14px;border-top:1px solid rgba(251,191,36,.4)}
+  #delayStrip.show{display:block}
+
+  /* overlay state */
+  .overlay{position:absolute;inset:0;z-index:4;display:none;flex-direction:column;
+           align-items:center;justify-content:center;gap:10px;text-align:center;
+           background:rgba(1,3,6,.78);padding:20px}
+  .overlay.show{display:flex}
+  .overlay .spin{width:42px;height:42px;border:3px solid rgba(56,189,248,.2);
+                 border-top-color:var(--buf);animation:rot 1s linear infinite}
+  .overlay .spin.orange{border-color:rgba(251,146,60,.2);border-top-color:var(--recon)}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .overlay h2{font-size:15px;letter-spacing:.18em;font-weight:700}
+  .overlay p{font-size:12.5px;color:var(--muted);max-width:400px;line-height:1.6}
+  .overlay .code{font-family:var(--mono);font-size:11px;color:var(--faint);
+                 border:1px solid var(--line);padding:4px 10px;background:#03060a}
+  .btn{border:1px solid var(--line);background:var(--panel);color:var(--text);
+       font-size:12px;letter-spacing:.12em;font-weight:700;padding:10px 22px;margin-top:4px}
+  .btn:hover{border-color:var(--buf);color:#fff}
+
+  /* kartu identitas kamera (di bawah player) */
+  .camcard{background:var(--panel);border:1px solid var(--line);padding:12px 14px;
+           display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;
+           justify-content:space-between}
+  .camcard label{font-size:10px;letter-spacing:.2em;color:var(--faint);display:block;margin-bottom:6px}
+  #camSelect{background:var(--bg2);color:var(--text);border:1px solid var(--line);
+             padding:9px 12px;font-size:13px;font-weight:600;max-width:100%;opacity:.7}
+  #camSelect:disabled{cursor:not-allowed}
+  .cam-id{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:6px}
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;font-weight:700;
+        color:var(--buf);border:1px solid rgba(56,189,248,.35);padding:5px 10px;
+        background:rgba(56,189,248,.06);white-space:nowrap}
+
+  /* ---------- rel telemetri ---------- */
+  .rail{display:flex;flex-direction:column;gap:14px;min-width:0}
+  .panel{background:var(--panel);border:1px solid var(--line)}
+  .panel>h2{font-size:10.5px;letter-spacing:.22em;color:var(--muted);padding:11px 14px;
+             border-bottom:1px solid var(--line);font-weight:700}
+  .panel>h2 .rec{color:var(--live)}
+  .trow{display:flex;justify-content:space-between;align-items:center;
+        padding:9px 14px;border-bottom:1px solid rgba(26,34,51,.6);font-size:12.5px}
+  .trow:last-child{border-bottom:none}
+  .trow .k{color:var(--muted);letter-spacing:.06em}
+  .trow .v{font-family:var(--mono);font-weight:600;color:var(--text)}
+  .trow .v.good{color:var(--live)} .trow .v.warn{color:var(--delay)} .trow .v.bad{color:var(--err)}
+  .bbar{height:6px;background:#0d1322;border:1px solid var(--line);margin:0 14px 12px;
+        position:relative;overflow:hidden}
+  .bbar i{position:absolute;inset:0;transform-origin:left;background:var(--buf);
+          transition:transform .6s ease}
+
+  /* log terminal */
+  #log{font-family:var(--mono);font-size:11px;line-height:1.75;padding:10px 14px;
+       max-height:220px;overflow-y:auto;color:var(--muted)}
+  #log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #log .lt{color:var(--faint)}
+  #log .ok{color:var(--live)} #log .wr{color:var(--delay)} #log .er{color:var(--err)}
+
+  /* ---------- konsol simulasi (mockup only) ---------- */
+  .sim{margin-top:14px;background:var(--panel);border:1px dashed #7c4a03}
+  .sim>h2{font-size:10.5px;letter-spacing:.22em;color:var(--delay);padding:11px 14px;
+          border-bottom:1px dashed #7c4a03;font-weight:700}
+  .sim .warn{font-size:12px;color:var(--muted);padding:10px 14px 0;line-height:1.6}
+  .sim .warn strong{color:var(--delay)}
+  .sim-btns{display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px 14px}
+  .sim-btns button{font-family:var(--mono);font-size:11px;letter-spacing:.1em;font-weight:700;
+                   padding:9px 14px;border:1px solid var(--line);background:var(--bg2);
+                   color:var(--muted)}
+  .sim-btns button:hover{color:var(--text);border-color:var(--faint)}
+  .sim-btns button.active{color:#fff;border-color:var(--buf);
+                          background:rgba(56,189,248,.12)}
+
+  footer{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-align:center;
+         line-height:1.8;padding-top:18px;letter-spacing:.04em}
+
+  @media (max-width:900px){
+    .grid{grid-template-columns:1fr}
+    .ribbon{font-size:10.5px;padding:8px 12px}
+  }
+  @media (max-width:640px){
+    .app{padding:0 8px 24px}
+    .tr-right{gap:8px;font-size:11px}
+    #log{max-height:160px}
+  }
+</style>
+</head>
+<body>
+<div class="scan" aria-hidden="true"></div>
+
+<div class="app">
+  <div class="toprail">
+    <div class="brand"><span class="sq" aria-hidden="true"></span>GODS EYE
+      <small>CONTROL ROOM · v0.1 MOCKUP</small></div>
+    <div class="tr-right">
+      <span class="pill">LOCALHOST</span>
+      <span id="clock">--:--:--</span>
+      <span>SES <b id="sess">00:00:00</b></span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- ================= STAGE ================= -->
+    <div class="stage">
+      <section class="player" id="player" data-state="loading" aria-label="Pemutar stream CCTV">
+        <canvas id="feed" aria-hidden="true"></canvas>
+        <div class="vg" aria-hidden="true"></div>
+
+        <div class="sdot st-loading" id="sdot" aria-live="polite">
+          <i aria-hidden="true"></i><span id="sdotText">STANDBY</span>
+        </div>
+        <div class="osd" id="osd" aria-hidden="true">CAM-01 · A.YANI — --:--:--</div>
+
+        <div class="overlay" id="overlay" role="status"></div>
+        <div class="ribbon st-loading" id="ribbon">▼ MEMUAT STREAM…</div>
+        <div id="delayStrip" aria-live="polite"></div>
+
+        <button id="fsBtn" class="btn" style="position:absolute;bottom:44px;right:12px;z-index:6;
+                margin:0;padding:7px 12px" aria-label="Layar penuh">⛶</button>
+      </section>
+
+      <section class="camcard" aria-label="Identitas kamera">
+        <div>
+          <label for="camSelect">SUMBER VIDEO · v0.1 DIKUNCI 1 KAMERA</label>
+          <select id="camSelect" disabled
+                  title="Multi-kamera tersedia di versi berikutnya — v0.1 dikunci 1 kamera">
+            <option>CAM-01 · Jl. Jend. A. Yani — RS Mitra Keluarga, Kota Bekasi</option>
+          </select>
+          <div class="cam-id">ID: Jl_Jend_A_Yani_RS_Mitra_Keluarga_Kota_Bekasi · HLS · 1920×1080 · 60fps</div>
+        </div>
+        <div class="chips" aria-label="Spesifikasi stream">
+          <span class="chip">1080P</span><span class="chip">HLS</span><span class="chip">60FPS</span>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================= REL TELEMETRI ================= -->
+    <aside class="rail">
+      <section class="panel" aria-label="Telemetri stream">
+        <h2><span class="rec">●</span> TELEMETRI STREAM</h2>
+        <div class="trow"><span class="k">STATUS</span><span class="v" id="tStatus">MEMUAT</span></div>
+        <div class="trow"><span class="k">BITRATE AKTIF</span><span class="v" id="tBitrate">—</span></div>
+        <div class="bbar" aria-hidden="true"><i id="bbarFill" style="transform:scaleX(0)"></i></div>
+        <div class="trow"><span class="k">RESOLUSI</span><span class="v">1920 × 1080</span></div>
+        <div class="trow"><span class="k">FPS (ESTIMASI)</span><span class="v" id="tFps">—</span></div>
+        <div class="trow"><span class="k">STALL</span><span class="v" id="tStall">0×</span></div>
+        <div class="trow"><span class="k">RECONNECT</span><span class="v" id="tRecon">0×</span></div>
+        <div class="trow"><span class="k">UPTIME SESI</span><span class="v" id="tUptime">00:00:00</span></div>
+      </section>
+
+      <section class="panel" aria-label="Log koneksi">
+        <h2>LOG KONEKSI</h2>
+        <div id="log" aria-live="polite" aria-label="Riwayat status koneksi"></div>
+      </section>
+    </aside>
+  </div>
+
+  <!-- ================= SIMULASI (MOCKUP ONLY) ================= -->
+  <section class="sim" aria-label="Konsol simulasi">
+    <h2>⚙ KONSOL SIMULASI — KHUSUS MOCKUP</h2>
+    <p class="warn"><strong>Panel ini TIDAK dibangun</strong> di aplikasi. Klik untuk
+       berpindah antar state stream (§4).</p>
+    <div class="sim-btns" role="group" aria-label="Pilih state stream">
+      <button data-state="loading">LOADING</button>
+      <button data-state="live">LIVE</button>
+      <button data-state="delay">DELAY</button>
+      <button data-state="buffering">BUFFERING</button>
+      <button data-state="reconnecting">RECONNECTING</button>
+      <button data-state="offline">OFFLINE</button>
+      <button data-state="error">ERROR</button>
+    </div>
+  </section>
+
+  <footer>
+    MOCKUP VARIAN 2 “RUANG KONTROL” · PRAPTO (UI/UX) · ASSIGNMENT #51 · 15 OKT 2026<br>
+    ACUAN: docs/arsitektur.md (SENTOT, #49) · SCOPE v0.1 DIKUNCI
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var $=function(id){return document.getElementById(id);};
+  var player=$("player"), ribbon=$("ribbon"), sdot=$("sdot"), sdotText=$("sdotText"),
+      overlay=$("overlay"), delayStrip=$("delayStrip"), osd=$("osd"),
+      tStatus=$("tStatus"), tBitrate=$("tBitrate"), tFps=$("tFps"),
+      tStall=$("tStall"), tRecon=$("tRecon"), tUptime=$("tUptime"),
+      bbarFill=$("bbarFill"), logEl=$("log");
+
+  var state="loading", attempt=1, delaySec=8,
+      stalls=0, reconnects=0, uptimeSec=0, sessSec=0,
+      delayTick=null, reconTimer=null;
+
+  /* ---------- jam + uptime ---------- */
+  function fmt(n){return (n<10?"0":"")+n;}
+  function tickClock(){
+    try{
+      var now=new Date();
+      $("clock").textContent=new Intl.DateTimeFormat("id-ID",{timeZone:"Asia/Jakarta",
+        hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).format(now)+" WIB";
+      var t=new Intl.DateTimeFormat("id-ID",{timeZone:"Asia/Jakarta",
+        hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).format(now);
+      osd.textContent="CAM-01 · A.YANI — "+t;
+    }catch(e){}
+  }
+  setInterval(function(){
+    sessSec++; $("sess").textContent=fmt(sessSec/3600|0)+":"+fmt((sessSec/60|0)%60)+":"+fmt(sessSec%60);
+    uptimeSec++; tUptime.textContent=fmt(uptimeSec/3600|0)+":"+fmt((uptimeSec/60|0)%60)+":"+fmt(uptimeSec%60);
+  },1000);
+  tickClock(); setInterval(tickClock,1000);
+
+  /* ---------- log koneksi ---------- */
+  function nowT(){return $("clock").textContent.replace(" WIB","");}
+  function log(msg,cls){
+    var d=document.createElement("div");
+    d.innerHTML='<span class="lt">['+nowT()+']</span> <span class="'+(cls||"")+'">'+msg+"</span>";
+    logEl.appendChild(d);
+    while(logEl.children.length>12) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop=logEl.scrollHeight;
+  }
+
+  /* ---------- feed simulasi: senja, kendaraan sebagai cahaya ---------- */
+  var cv=$("feed"), ctx=cv.getContext("2d"), W=960, H=540, cars=[], running=false, raf=null;
+  function sizeCanvas(){
+    var r=player.getBoundingClientRect();
+    cv.width=Math.max(2,Math.round(r.width)); cv.height=Math.max(2,Math.round(r.width*9/16));
+    W=cv.width; H=cv.height; seedCars();
+  }
+  function seedCars(){
+    cars=[];
+    for(var i=0;i<30;i++){
+      var dir=i%2===0?1:-1;
+      cars.push({x:Math.random()*W,
+        y:dir>0?H*0.55+Math.random()*H*0.04:H*0.65+Math.random()*H*0.04,
+        v:(dir>0?1:-1)*(W/420)*(0.5+Math.random()*1.5),
+        c:dir>0?"255,200,120":"255,90,90", s:1.5+Math.random()*2.5});
+    }
+  }
+  function drawFrame(){
+    var g=ctx.createLinearGradient(0,0,0,H); /* langit senja */
+    g.addColorStop(0,"#1b1030"); g.addColorStop(0.45,"#0d1428");
+    g.addColorStop(0.62,"#060a12"); g.addColorStop(1,"#030509");
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle="#0e1526"; /* siluet flyover */
+    ctx.fillRect(0,H*0.5,W,H*0.02);
+    for(var p=0;p<W;p+=W/8) ctx.fillRect(p,H*0.52,W*0.012,H*0.06);
+    ctx.fillStyle="#080c14"; /* badan jalan */
+    ctx.fillRect(0,H*0.56,W,H*0.3);
+    ctx.fillStyle="rgba(148,163,184,.3)";
+    for(var d=0;d<W;d+=44) ctx.fillRect(d,H*0.635,W*0.03,2);
+    for(var i=0;i<cars.length;i++){
+      var c=cars[i]; c.x+=c.v;
+      if(c.x<-30)c.x=W+30; if(c.x>W+30)c.x=-30;
+      var gr=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,c.s*6);
+      gr.addColorStop(0,"rgba("+c.c+",.95)"); gr.addColorStop(1,"rgba("+c.c+",0)");
+      ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(c.x,c.y,c.s*6,0,7); ctx.fill();
+      ctx.fillStyle="rgba("+c.c+",1)"; ctx.fillRect(c.x-c.s/2,c.y-c.s/2,c.s,c.s);
+    }
+    ctx.fillStyle="rgba(255,255,255,.05)";
+    for(var n=0;n<46;n++) ctx.fillRect(Math.random()*W,Math.random()*H,1,1);
+  }
+  function loop(){ if(!running)return; drawFrame(); raf=requestAnimationFrame(loop); }
+  function feedStart(){ if(running)return; running=true; loop(); }
+  function feedStop(){ running=false; if(raf)cancelAnimationFrame(raf); raf=null; }
+  sizeCanvas(); window.addEventListener("resize",sizeCanvas);
+
+  /* ---------- overlay ---------- */
+  function setOverlay(html){overlay.innerHTML=html||"";overlay.classList.toggle("show",!!html);}
+  function clearTimers(){
+    if(delayTick){clearInterval(delayTick);delayTick=null;}
+    if(reconTimer){clearTimeout(reconTimer);reconTimer=null;}
+    delayStrip.classList.remove("show"); ribbon.classList.remove("delay-mode");
+  }
+
+  function setMetrics(bitrate,fps){
+    tBitrate.textContent=bitrate; tFps.textContent=fps;
+    var frac=bitrate==="—"?0:Math.min(1,parseFloat(bitrate)/6);
+    bbarFill.style.transform="scaleX("+frac+")";
+  }
+
+  var STATES={
+    loading:{cls:"st-loading",sdot:"STANDBY",ribbon:"▼ MEMUAT STREAM…",
+      tstat:["MEMUAT",""],feed:false,ov:null,
+      after:function(){setMetrics("—","—");log("Handshake HLS… menunggu manifest","wr");
+        setTimeout(function(){if(state==="loading")setState("live");},2600);}},
+    live:{cls:"st-live",sdot:"● LIVE",ribbon:"▲ LIVE — FEED STABIL",
+      tstat:["LIVE","good"],feed:true,ov:null,
+      after:function(){setMetrics("4,2 Mbps","58");log("LIVE — feed stabil, latensi ≤ 3 dtk","ok");}},
+    delay:{cls:"st-delay",sdot:"● DELAY",ribbon:"▲ DELAY ±8 DTK — FEED TERTINGGAL",
+      tstat:["DELAY","warn"],feed:true,ov:null,
+      after:function(){delaySec=8;renderDelay();setMetrics("3,6 Mbps","41");
+        log("DELAY — tertinggal ±8 dtk dari ujung playlist","wr");
+        delayTick=setInterval(function(){delaySec++;renderDelay();},4000);}},
+    buffering:{cls:"st-buffering",sdot:"◌ BUFFERING",ribbon:"▼ BUFFERING — MENUNGGU DATA",
+      tstat:["BUFFERING","warn"],feed:false,
+      ov:'<div class="spin" aria-hidden="true"></div><h2>BUFFERING</h2>'+
+         '<p>Menunggu data stream. Kondisi normal pada jaringan ini.</p>',
+      after:function(){stalls++;tStall.textContent=stalls+"×";setMetrics("0,4 Mbps","0");
+        log("STALL #"+stalls+" — frame membeku, menunggu segmen","wr");}},
+    reconnecting:{cls:"st-reconnecting",sdot:"↻ RECONNECT",ribbon:"▼ MENYAMBUNG ULANG…",
+      tstat:["RECONNECTING","warn"],feed:false,
+      after:function(){attempt=1;reconnects++;tRecon.textContent=reconnects+"×";
+        setMetrics("—","—");log("Koneksi putus — mulai backoff reconnect","er");
+        var steps=[1,2,5];
+        (function showAttempt(){
+          sdotText.textContent="↻ RECONNECT · R"+attempt;
+          ribbon.textContent="▼ MENYAMBUNG ULANG · PERCOBAAN KE-"+attempt;
+          tStatus.textContent="RECONNECT R"+attempt;
+          setOverlay('<div class="spin orange" aria-hidden="true"></div>'+
+            "<h2>MENYAMBUNG ULANG · R"+attempt+"</h2>"+
+            "<p>Backoff "+steps[attempt-1]+" dtk sebelum percobaan berikutnya.</p>");
+          if(attempt<steps.length){
+            log("Percobaan ke-"+attempt+" gagal — backoff "+steps[attempt-1]+" dtk","wr");
+            attempt++;
+            reconTimer=setTimeout(showAttempt,1400);
+          }else{
+            reconTimer=setTimeout(function(){if(state==="reconnecting")setState("offline");},1400);
+          }
+        })();}},
+    offline:{cls:"st-offline",sdot:"○ OFFLINE",ribbon:"▼ STREAM OFFLINE — BACKOFF HABIS",
+      tstat:["OFFLINE",""],feed:false,
+      ov:"<h2>STREAM OFFLINE</h2><p>Semua percobaan sambung ulang habis.</p>"+
+         '<button class="btn" id="retryBtn">COBA SAMBUNGKAN LAGI</button>',
+      after:function(){setMetrics("—","—");log("OFFLINE — backoff habis, menunggu aksi manual","er");
+        $("retryBtn").onclick=function(){setState("reconnecting");};}},
+    error:{cls:"st-error",sdot:"✕ ERROR",ribbon:"▼ GAGAL MEMUAT STREAM",
+      tstat:["ERROR","bad"],feed:false,
+      ov:"<h2>GAGAL MEMUAT STREAM</h2><p>Manifest tidak terjangkau.</p>"+
+         '<div class="code">VDB-E01 · manifest unreachable</div>'+
+         '<button class="btn" id="reloadBtn">MUAT ULANG</button>',
+      after:function(){setMetrics("—","—");log("ERROR VDB-E01 — manifest unreachable","er");
+        $("reloadBtn").onclick=function(){setState("loading");};}}
+  };
+
+  function renderDelay(){
+    ribbon.textContent="▲ DELAY ±"+delaySec+" DTK — FEED TERTINGGAL";
+    delayStrip.textContent="◈ TERTINGGAL ±"+delaySec+" DTK DARI SIARAN — BUKAN LIVE PENUH";
+    delayStrip.classList.add("show"); ribbon.classList.add("delay-mode");
+  }
+
+  function setState(s){
+    clearTimers(); state=s; var st=STATES[s];
+    player.setAttribute("data-state",s);
+    sdot.className="sdot "+st.cls; sdotText.textContent=st.sdot;
+    ribbon.className="ribbon "+st.cls; ribbon.textContent=st.ribbon;
+    tStatus.textContent=st.tstat[0];
+    tStatus.className="v "+st.tstat[1];
+    setOverlay(st.ov);
+    if(st.feed)feedStart();else feedStop();
+    document.querySelectorAll(".sim-btns button").forEach(function(b){
+      b.classList.toggle("active",b.getAttribute("data-state")===s);
+    });
+    if(st.after)st.after();
+  }
+
+  document.querySelectorAll(".sim-btns button").forEach(function(b){
+    b.addEventListener("click",function(){setState(b.getAttribute("data-state"));});
+  });
+  $("fsBtn").addEventListener("click",function(){
+    var el=$("player");
+    if(document.fullscreenElement){document.exitFullscreen();}
+    else if(el.requestFullscreen){el.requestFullscreen();}
+  });
+
+  log("Konsol siap — CAM-01 terdaftar","ok");
+  setState("loading");
+})();
+</script>
+</body>
+</html>
