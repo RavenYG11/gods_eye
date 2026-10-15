@@ -1,15 +1,15 @@
-// Rujukan: docs/arsitektur.md §3
+// Rujukan: docs/arsitektur.md §3 + Addendum #59 (backend fullstack)
 // ATURAN KERAS: URL stream JANGAN hardcode di komponen. Semua URL hidup di
 // file ini. Ganti/tambah kamera = edit file ini saja, tanpa sentuh komponen.
 //
-// BUG CORS (verifikasi Rama 2026-10-15 13:56 WIB — fix #58 Gunet):
-// request .m3u8 via hls.js dari origin http://localhost:5173 GAGAL
-// (Network tab: red X, 0 byte, tanpa status code) padahal URL yang sama
-// dibuka langsung di tab baru → video LIVE. Pola klasik CORS-block:
-// navigasi langsung tidak kena CORS, tapi XHR browser diblokir karena
-// server tidak mengirim Access-Control-Allow-Origin.
-// Fix: saat DEV, app memakai URL proksi same-origin /cctv/*
-// (lihat "server.proxy" di vite.config.ts). Saat PROD, tetap URL absolut.
+// ARSITEKTUR STREAM (#59, Gunet 2026-10-15):
+// app SELALU memakai path relatif "/cctv/…" (same-origin). Yang melayani
+// path itu tergantung mode jalan:
+//   - DEV  (npm run dev)  → proksi Vite (server.proxy di vite.config.ts)
+//   - PROD (backend)      → reverse proxy Express (backend/server.js)
+// Keduanya meneruskan ke https://eofficev2.bekasikota.go.id → browser tidak
+// kena CORS di semua environment. Tidak ada lagi logika DEV-vs-PROD di sini
+// (bug CORS #58 → perintah fullstack Rama #59).
 
 export interface CameraConfig {
   /** Slug stabil, dipakai sebagai camera_id. */
@@ -18,29 +18,25 @@ export interface CameraConfig {
   name: string;
   /**
    * URL HLS .m3u8 (upstream asli). Ini URL KANONIK — komponen TIDAK BOLEH
-   * memakai field ini langsung; pakai getStreamUrl() agar logika
-   * DEV-vs-PROD konsisten di satu tempat.
+   * memakai field ini langsung; pakai getStreamUrl() agar path proksi
+   * konsisten di satu tempat.
    */
   streamUrl: string;
   location?: string;
 }
 
-/** Prefix proksi dev (harus cocok dengan "server.proxy" di vite.config.ts). */
-export const DEV_STREAM_PROXY_PREFIX = "/cctv";
+/** Prefix proksi stream (harus cocok dengan backend/server.js DAN vite.config.ts). */
+export const STREAM_PROXY_PREFIX = "/cctv";
 
 /**
  * URL stream EFEKTIF yang dipakai komponen/player.
- * - DEV (`npm run dev`): "/cctv/backupcctv/m3/….m3u8" → request same-origin
- *   ke dev-server Vite, diteruskan ke server CCTV → bebas CORS (bug #58).
- * - PROD (`npm run build` + XAMPP): URL absolut langsung — lihat batasan
- *   CORS produksi di docs/runbook.md §6.
+ * Selalu path relatif same-origin, mis:
+ *   "/cctv/backupcctv/m3/Jl_Jend_A_Yani_RS_Mitra_Keluarga_Kota_Bekasi.m3u8"
+ * Proksi (Vite saat dev, Express saat production) meneruskannya ke upstream.
  */
 export function getStreamUrl(camera: CameraConfig): string {
-  if (import.meta.env.DEV) {
-    const upstream = new URL(camera.streamUrl);
-    return `${DEV_STREAM_PROXY_PREFIX}${upstream.pathname}${upstream.search}`;
-  }
-  return camera.streamUrl;
+  const upstream = new URL(camera.streamUrl);
+  return `${STREAM_PROXY_PREFIX}${upstream.pathname}${upstream.search}`;
 }
 
 export const CAMERAS: CameraConfig[] = [

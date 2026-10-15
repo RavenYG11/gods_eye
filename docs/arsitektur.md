@@ -211,3 +211,30 @@ Tidak ada panah ke server — memang tidak ada server.
 - **Testarossa (QA Fase 1):** skenario wajib = cabut jaringan 30 dtk → pastikan RECONNECTING → LIVE kembali; throttling bandwidth → pastikan DELAY tampil jujur.
 
 *— Sentot, Software Architect · Assignment #49 · 15 Okt 2026*
+
+---
+
+## 8. Addendum — backend fullstack (#59, Gunet, 15 Okt 2026)
+
+**Perintah langsung Rama (15 Okt 2026 14:07 WIB):** *"kenapa ga fullstack, suruh gunet
+bikin backendnya."* Keputusan frontend-only Meeting #4 (D2) **dibatalkan** oleh perintah ini —
+v0.1 kini fullstack. Pagar §5 (tanpa rekaman, tanpa detection, tanpa face recognition)
+tetap berlaku penuh.
+
+**Yang ditambahkan (scope minimal, tanpa over-engineering):**
+
+| Lapisan | Pilihan | Alasan singkat |
+|---|---|---|
+| Backend | Node.js + Express + `http-proxy-middleware` | Paling simpel & stabil untuk kebutuhan ini: reverse proxy + static server |
+| `GET /cctv/*` | Reverse proxy → `https://eofficev2.bekasikota.go.id/*` (prefix `/cctv` dibuang, `changeOrigin: true`) | Menyelesaikan bug CORS **permanen** di semua environment — browser hanya request same-origin |
+| `GET /` | `express.static(../dashboard/dist)` + SPA fallback → `index.html` | Satu server melayani app + proksi = satu origin |
+| `GET /api/health` | `{ ok, upstream, frontendBuilt }` | Health check untuk runbook/troubleshooting |
+| `config/cameras.ts` | `getStreamUrl()` **selalu** path relatif `/cctv/…` — logika DEV-vs-PROD dihapus | Satu kode untuk semua mode: dev → proksi Vite, production → proksi Express |
+
+**Struktur baru:** `backend/` (root repo) berisi `server.js` + `package.json` sendiri + `README.md`.
+Env opsional: `PORT` (default 3000), `CCTV_UPSTREAM` (default server CCTV Bekasi).
+
+**Batasan jujur:** stream tidak bisa dites dari VM (WAF blokir IP data center) — "video tampil"
+wajib verifikasi Rama di laptop (runbook §7). Backend sengaja **tidak** me-rewrite isi playlist;
+bila segmen `.m3u8` ternyata URL absolut (→ CORS lagi), solusinya rewrite playlist di proksi —
+dilaporkan dulu ke manager bila terbukti.

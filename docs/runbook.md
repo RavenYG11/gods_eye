@@ -1,39 +1,44 @@
 # RUNBOOK — GODS EYE v0.1 (Dashboard CCTV Kota Bekasi)
 
 **Pemilik runbook:** Epthal (DevOps Engineer), Assignment #55 · **Tanggal:** 15 Okt 2026
+**Revisi backend fullstack:** Gunet, Assignment #59 · **Tanggal:** 15 Okt 2026
 **Scope:** operasional v0.1 — dashboard web stream viewer **1 kamera** CCTV Bekasi (HLS 1080p).
-100% frontend, **tanpa backend**. Build QA: Testarossa #54 — **LULUS DENGAN CATATAN** (`docs/qa-report-v0.1.md`).
+Fullstack: backend Node.js (reverse proxy anti-CORS + static server) + frontend React.
+Build QA: Testarossa #54 — **LULUS DENGAN CATATAN** (`docs/qa-report-v0.1.md`).
 
 > Scope v0.1 **DIKUNCI** (Meeting #4 D1–D6): object detection DILARANG dibangun sampai Rama mencabut
 > larangan + hasil benchmark i5 keluar. Tanpa rekaman. Face recognition OUT OF SCOPE permanen (UU PDP).
+> Perintah Rama 15 Okt 2026 14:07 WIB ("kenapa ga fullstack, suruh gunet bikin backendnya")
+> **membatalkan** keputusan frontend-only — v0.1 kini fullstack (#59).
 
 ---
 
 ## 1. Arsitektur singkat
 
 ```
-MODE DEV (npm run dev — cara jalan yang disarankan v0.1):
-Browser (laptop Rama)
- └─ index.html + assets JS/CSS (dari Vite dev-server :5173)
-      └─ hls.js → GET /cctv/backupcctv/m3/<kamera>.m3u8 (same-origin)
-           └─ Vite proxy → HTTPS → https://eofficev2.bekasikota.go.id/backupcctv/m3/<kamera>.m3u8
-               (rewrite: hapus prefix /cctv; changeOrigin: true)
-           → BEBAS CORS (bug #58, fix Gunet 2026-10-15)
-
-MODE PROD (npm run build + XAMPP — lihat batasan §6):
-Browser
- └─ index.html + assets JS/CSS (statis)
-      └─ hls.js → HTTPS GET langsung → https://eofficev2.bekasikota.go.id/…
-           → KENA CORS (lihat §6)
+Browser (laptop Rama, jaringan rumah)
+  │  satu origin → CORS HILANG TOTAL (dev maupun production)
+  ▼
+┌── backend/ ── Node.js + Express ── http://localhost:3000 ──────────┐
+│  GET /            → file statis dashboard/dist (hasil npm run build)│
+│  GET /cctv/*      → REVERSE PROXY ──HTTPS──▶                       │
+│  GET /api/health  → { ok, upstream, frontendBuilt } (health check)  │
+└────────────────────────────────────────────────────────────────────┘
+                                              │
+                                              ▼
+                              https://eofficev2.bekasikota.go.id
+                              (server CCTV Bekasi — .m3u8, segmen .ts)
 ```
 
-- Tidak ada server aplikasi, tidak ada database, tidak ada API key/secret.
+- Tidak ada server aplikasi logika bisnis, tidak ada database, tidak ada API key/secret.
 - Satu-satunya dependensi runtime eksternal = URL stream CCTV di `dashboard/src/config/cameras.ts`
-  (tidak ada URL hardcode di komponen lain). URL EFEKTIF yang dipakai player dihitung
-  fungsi `getStreamUrl()` di file itu: **DEV** → path proksi `/cctv/*`,
-  **PROD** → URL absolut upstream.
-- `vite.config.ts` memakai `base: './'` → hasil build bisa disajikan dari subfolder mana pun,
-  dan `server.proxy["/cctv"]` → `https://eofficev2.bekasikota.go.id` (hanya aktif saat `npm run dev`).
+  (tidak ada URL hardcode di komponen lain). `getStreamUrl()` di file itu **selalu**
+  menghasilkan path relatif `/cctv/…` (same-origin) — tidak ada lagi logika DEV-vs-PROD.
+- Yang melayani `/cctv/*` tergantung mode jalan:
+  - **Dev** (`npm run dev` di `dashboard/`): proksi Vite (`server.proxy` di `vite.config.ts`).
+  - **Production** (`npm start` di `backend/`): reverse proxy Express (`backend/server.js`).
+  - Keduanya meneruskan ke `https://eofficev2.bekasikota.go.id` (`changeOrigin: true`,
+    prefix `/cctv` dibuang). Frontend tidak peduli mode apa — selalu request `/cctv/…`.
 
 ---
 
@@ -44,7 +49,6 @@ Browser
 | Node.js + npm | Node 18+ (cek: `node -v`, `npm -v`) |
 | Browser | Chrome / Edge terbaru (mendukung MSE + hls.js) |
 | Git | untuk clone repo |
-| XAMPP (opsional) | Apache untuk opsi serve `http://localhost/gods-eye/` |
 | Jaringan rumah | **wajib dari IP rumah** — server CCTV memblokir IP data center/VM (terbukti di riset) |
 
 ---
@@ -55,47 +59,51 @@ Browser
 git clone https://github.com/RavenYG11/gods_eye.git
 cd gods_eye/dashboard
 npm install
+cd ../backend
+npm install
 ```
 
-> `package-lock.json` ikut di-commit → versi dependensi deterministik
-> (React 18, Vite 6, TypeScript 5.6, hls.js 1.6.2).
+> `package-lock.json` ikut di-commit → versi dependensi deterministik.
 
 ---
 
-## 4. Mode pengembangan (localhost)
+## 4. Cara jalan
+
+### 4a. Fullstack — DIREKOMENDASIKAN (satu origin, bebas CORS permanen)
 
 ```bash
 cd dashboard
-npm run dev
-# → http://localhost:5173
+npm run build        # sekali per ada perubahan frontend → dashboard/dist/
+cd ../backend
+npm start            # → http://localhost:3000
 ```
 
-**Proksi dev anti-CORS (fix bug #58, Gunet 2026-10-15).** Verifikasi Rama 2026-10-15 13:56 WIB:
-URL `.m3u8` dibuka langsung di tab baru → video LIVE, tetapi request yang sama via hls.js
-dari origin `http://localhost:5173` GAGAL (Network tab: red X, 0 byte, tanpa status code).
-Pola klasik **CORS-block**: navigasi langsung tidak kena CORS, XHR browser diblokir karena
-server tidak mengirim `Access-Control-Allow-Origin`.
+Buka **http://localhost:3000**. Backend melayani app + proksi stream dari satu
+origin → browser tidak kena CORS di environment apa pun.
 
-Maka saat DEV, app TIDAK request langsung ke server CCTV. `getStreamUrl()`
-(`src/config/cameras.ts`) memakai `import.meta.env.DEV` dan menghasilkan path proksi:
+> Port default `3000`. Ganti bila bentrok: `PORT=8080 npm start`.
+> Upstream proksi default `https://eofficev2.bekasikota.go.id`;
+> ganti via `CCTV_UPSTREAM=https://… npm start` (lihat `backend/README.md`).
 
+### 4b. Dev UI — iterasi cepat (hot reload)
+
+```bash
+cd dashboard
+npm run dev          # → http://localhost:5173
 ```
-/cctv/backupcctv/m3/Jl_Jend_A_Yani_RS_Mitra_Keluarga_Kota_Bekasi.m3u8
+
+Untuk ngoding dashboard (Vite hot-reload otomatis tiap simpan file).
+Proksi `/cctv` tetap tersedia via `server.proxy` di `vite.config.ts`,
+jadi stream jalan juga di mode ini.
+
+**Preflight cepat (opsional, dari laptop):** pastikan playlist terjangkau sebelum buka app:
+
+```powershell
+curl -s -o NUL -w "%{http_code}`n" https://eofficev2.bekasikota.go.id/backupcctv/m3/Jl_Jend_A_Yani_RS_Mitra_Keluarga_Kota_Bekasi.m3u8
+# Harus keluar: 200
 ```
 
-Vite dev-server meneruskannya ke `https://eofficev2.bekasikota.go.id` (lihat
-`server.proxy` di `vite.config.ts`, `changeOrigin: true`, rewrite hapus prefix `/cctv`).
-Request dari browser = same-origin → tidak kena CORS. Dev-server jalan di laptop Rama
-(jaringan rumah, IP tidak diblokir WAF) → proksi meneruskan dengan lancar.
-
-**Batasan yang belum bisa dicek dari VM (IP diblokir WAF) — waspada segmen:**
-jika isi `.m3u8` mencantumkan URL segmen **absolut** (bukan relatif), hls.js akan request
-segmen langsung ke server CCTV → kena CORS lagi meskipun playlist lewat proksi.
-Bila badge LIVE muncul lalu stream macet/gagal dengan error CORS di console, ini
-penyebabnya — laporkan ke manager, JANGAN mengarang solusi sendiri.
-Verifikasi URL segmen = buka hasil proksi di laptop Rama dan periksa isi playlist.
-
-Ganti kamera / URL stream: edit **hanya** `src/config/cameras.ts`, simpan — Vite hot-reload otomatis.
+Ganti kamera / URL stream: edit **hanya** `dashboard/src/config/cameras.ts`.
 
 ---
 
@@ -106,10 +114,12 @@ cd dashboard
 npm run build        # = tsc -b && vite build
 ```
 
-Hasil: `dashboard/dist/` berisi `index.html` + `assets/*.js` + `assets/*.css` (statis, path relatif `./assets/…`).
+Hasil: `dashboard/dist/` berisi `index.html` + `assets/*.js` + `assets/*.css` (statis).
+Folder inilah yang disajikan backend (`express.static`). Tidak perlu copy manual
+ke mana-mana — cukup `npm start` di `backend/`.
 
 **Catatan build (QA #54, temuan O1):** Vite memberi warning `chunk > 500 kB`
-(`index-CffyLipj.js` ±759 KB — mayoritas hls.js). Ini **bukan bug**; untuk app localhost
+(`index-*.js` ±759 KB — mayoritas hls.js). Ini **bukan bug**; untuk app localhost
 tidak berdampak. Optimasi (code-split hls.js via dynamic `import()`) dicatat sebagai backlog.
 
 **Jangan commit `dist/` dan `node_modules/`** — `.gitignore` di root repo sudah menutup:
@@ -117,26 +127,19 @@ tidak berdampak. Optimasi (code-split hls.js via dynamic `import()`) dicatat seb
 
 ---
 
-## 6. Serve via XAMPP — `http://localhost/gods-eye/`
+## 6. Opsi lama: serve via XAMPP — `http://localhost/gods-eye/` (tidak disarankan)
 
-> ⚠️ **BATASAN PRODUKSI v0.1 (bug CORS #58).** Hasil `npm run build` memakai URL stream
-> **absolut** langsung ke `https://eofficev2.bekasikota.go.id` (proksi `/cctv` hanya ada di
-> dev-server Vite, tidak ikut terbawa ke `dist/`). Karena server tidak mengirim
-> `Access-Control-Allow-Origin`, request hls.js dari `http://localhost/gods-eye/` akan
-> diblokir browser (CORS) — gejala sama seperti sebelum fix: overlay "Memuat stream…" /
-> "Gagal memuat stream", Network tab red X 0 byte. Tanpa `mod_proxy` Apache (di luar scope
-> v0.1), XAMPP tidak bisa meniru proksi dev. **Untuk v0.1, cara jalan yang didukung =
-> `npm run dev`** (§4). Opsi XAMPP di bawah ini didokumentasikan apa adanya untuk kelak
-> setelah strategi CORS produksi diputuskan.
+> Sejak #59, cara produksi yang didukung = **backend** (§4a). Opsi XAMPP ini
+> didokumentasikan apa adanya untuk arsip. **Batasan:** Apache XAMPP tidak punya
+> proksi `/cctv` → request hls.js dari `http://localhost/gods-eye/` tetap kena
+> CORS-block (server CCTV tidak mengirim `Access-Control-Allow-Origin`).
+> Tanpa `mod_proxy` Apache, batasan ini tidak bisa diatasi di XAMPP.
 
 1. Jalankan `npm run build` (lihat §5).
 2. Salin **isi** `dashboard/dist/` ke `C:\xampp\htdocs\gods-eye\`
    (folder `gods-eye` dibuat bila belum ada; yang disalin isinya: `index.html` + folder `assets/`).
 3. Pastikan Apache XAMPP berjalan (XAMPP Control Panel → Start Apache).
-4. Buka **http://localhost/gods-eye/** di Chrome/Edge.
-
-Alternatif tanpa XAMPP: `npm run preview` (serve `dist/` di port 4173 —
-catatan: `preview` juga memakai URL absolut, sehingga kena batasan CORS yang sama).
+4. Buka **http://localhost/gods-eye/** di Chrome/Edge — ⚠️ stream akan kena CORS (§8).
 
 ### 6.1 `.htaccess` yang disarankan (XAMPP)
 
@@ -159,9 +162,6 @@ Options -Indexes
 </IfModule>
 ```
 
-Catatan: `media-src`/`connect-src` mencakup `eofficev2.bekasikota.go.id` karena segmen HLS
-diambil langsung dari sana oleh browser (server sudah mengirim `CORS: *`).
-
 ---
 
 ## 7. Checklist verifikasi di laptop Rama (WAJIB)
@@ -170,7 +170,9 @@ Stream **tidak terjangkau dari VM/server** (WAF memblokir IP data center) — QA
 hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 **wajib dijalankan dari laptop Rama (jaringan rumah)**:
 
-- [ ] `npm run dev` → buka `http://localhost:5173` — halaman tampil tanpa error console.
+**Mode fullstack (backend, §4a) — jalur utama:**
+- [ ] `cd backend && npm start` → buka `http://localhost:3000` — halaman tampil tanpa error console.
+- [ ] `curl http://localhost:3000/api/health` → `{"ok":true,…,"frontendBuilt":true}`.
 - [ ] Badge status berubah menjadi **● LIVE** dalam ±10 detik.
 - [ ] Panel **"Log koneksi"** (di bawah player, full-width) terisi event nyata, mis.
       `OK Terhubung — manifest dimuat (N level kualitas tersedia).`
@@ -178,14 +180,13 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 - [ ] Matikan WiFi ±10 detik → badge **◌ BUFFERING** lalu **↻ MENYAMBUNG ULANG**,
       log mencatat urutan backoff (1s → 2s → 5s → 15s → 30s); nyalakan WiFi → kembali **LIVE**.
 - [ ] Pagar scope tetap: **tanpa tombol record**, tanpa panel deteksi, tanpa face recognition.
-- [ ] Ulangi poin di atas untuk `http://localhost/gods-eye/` (XAMPP) bila memakai opsi §6.
 
-**Preflight cepat (opsional, dari laptop):** pastikan playlist terjangkau sebelum buka app:
+**Mode dev (§4b):**
+- [ ] `npm run dev` → buka `http://localhost:5173` — badge **● LIVE** juga muncul
+      (proksi Vite, bukan backend).
 
-```powershell
-curl -s -o NUL -w "%{http_code}`n" https://eofficev2.bekasikota.go.id/backupcctv/m3/Jl_Jend_A_Yani_RS_Mitra_Keluarga_Kota_Bekasi.m3u8
-# Harus keluar: 200
-```
+**Preflight backend tanpa stream (bisa dari VM):**
+- [ ] `GET /` → `200 text/html`; `GET /api/health` → `ok:true`; path acak → `200` (SPA fallback).
 
 ---
 
@@ -193,29 +194,30 @@ curl -s -o NUL -w "%{http_code}`n" https://eofficev2.bekasikota.go.id/backupcctv
 
 | Gejala | Penyebab umum | Tindakan |
 |---|---|---|
-| `npm run dev` gagal: `EADDRINUSE` / port 5173 dipakai | Port bentrok | Matikan proses Vite lain, atau `npm run dev -- --port 5174` |
-| Overlay `Memuat stream…` / request `.m3u8` red X, 0 byte, tanpa status | **CORS-block (bug #58)** — server tidak mengirim `Access-Control-Allow-Origin`; XHR hls.js dari origin app diblokir browser, padahal URL dibuka langsung di tab → LIVE | Cara jalan v0.1 = `npm run dev` (§4, proksi `/cctv`). Jangan paksakan via XAMPP/build tanpa strategi CORS produksi |
-| Playlist termuat (badge LIVE sebentar) lalu gagal / error CORS di console saat segmen diminta | URL segmen di `.m3u8` **absolut** (bukan relatif) → hls.js request segmen langsung ke server → kena CORS lagi | Belum terverifikasi dari VM (WAF blokir IP). Periksa isi playlist dari laptop Rama; laporkan ke manager, jangan mengarang solusi |
-| Halaman putih / `Failed to fetch` ke `.m3u8` | WAF server memblokir IP jaringan ini | Uji dari jaringan lain (tethering HP); jalankan preflight §7 |
-| Overlay `Gagal memuat stream` + log `GALAT` | Manifest tidak terjangkau / playlist tidak valid | Cek preflight §7 → harus `200` + isi diawali `#EXTM3U` |
+| `npm start` (backend) → peringatan `dashboard/dist belum ada` | Frontend belum di-build | `cd dashboard && npm run build`, lalu `npm start` lagi di `backend/` |
+| `npm start` gagal: `EADDRINUSE` / port 3000 dipakai | Port bentrok | Matikan proses lain, atau `PORT=8080 npm start` |
+| `GET /cctv/…` → `500` | Upstream tidak terjangkau dari jaringan ini (WAF blokir IP / internet mati) — **bukan** bug routing bila `/` dan `/api/health` normal | Jalankan preflight §4 (harus `200`); uji dari jaringan rumah / tethering HP |
+| Badge LIVE di dev (`:5173`) tapi tidak via backend (`:3000`) | Backend belum jalan / `dist/` basi | Pastikan `npm start` jalan; `npm run build` ulang di `dashboard/` bila frontend diubah |
+| Overlay `Memuat stream…` / request `.m3u8` red X, 0 byte, tanpa status | **CORS-block** — terjadi bila app dibuka BUKAN via backend/dev-server (mis. XAMPP §6 atau file langsung) | Cara jalan yang didukung = §4a (backend) atau §4b (dev). Jangan serve `dist/` mentah tanpa proksi |
+| Playlist termuat (badge LIVE sebentar) lalu gagal / error CORS di console saat segmen diminta | URL segmen di `.m3u8` **absolut** (bukan relatif) → hls.js request segmen langsung ke server → kena CORS lagi | Belum terverifikasi dari VM (WAF blokir IP). Periksa isi playlist dari laptop Rama; laporkan ke manager, jangan mengarang solusi. Solusi cadangan: rewrite playlist di proksi backend |
+| Halaman putih / `Failed to fetch` ke `.m3u8` | WAF server memblokir IP jaringan ini | Uji dari jaringan lain (tethering HP); jalankan preflight §4 |
+| Overlay `Gagal memuat stream` + log `GALAT` | Manifest tidak terjangkau / playlist tidak valid | Cek preflight §4 → harus `200` + isi diawali `#EXTM3U` |
 | `HLS tidak didukung browser ini.` | Browser tanpa MSE (atau sangat lawas) | Pakai Chrome/Edge terbaru |
 | Badge `◌ BUFFERING` terus-menerus | Bandwidth tidak cukup untuk level 1080p | App otomatis turunkan kualitas (stall > 10 dtk); bila tetap, cek kecepatan internet |
-| `CORS` error di console pada mode PROD (XAMPP/preview) | Diharapkan — proksi `/cctv` hanya ada di `npm run dev`; build memakai URL absolut (§6) | Jalankan via `npm run dev` untuk v0.1; strategi CORS produksi diputuskan terpisah |
 | `npm install` gagal | Node terlalu lama / cache korup | `node -v` (butuh 18+); `npm cache clean --force` lalu ulangi |
-| Aset 404 saat dibuka dari XAMPP subfolder | `base` bukan relatif | Pastikan build dari repo ini (`base: './'` di `vite.config.ts`) — jangan edit manual hasil `dist/` |
-| Log koneksi kosong | JS error / bundle gagal load | Buka DevTools → Console; pastikan `dist/` tersalin lengkap (`index.html` + `assets/`) |
+| Log koneksi kosong | JS error / bundle gagal load | Buka DevTools → Console; pastikan `npm run build` sukses & `dist/` lengkap |
 
 **Aturan diagnosis (gaya kerja Epthal): periksa log sebelum menyimpulkan.**
-Urutan: panel "Log koneksi" di app → DevTools Console → Network tab (lihat request `.m3u8`/`.ts`) → baru simpulkan.
+Urutan: panel "Log koneksi" di app → `GET /api/health` → DevTools Console → Network tab (lihat request `.m3u8`/`.ts`) → baru simpulkan.
 
 ---
 
 ## 9. Backup & rollback
 
 - **Backup kode:** setiap perubahan di-commit & push ke `main` repo `gods_eye`.
-- **Backup deploy (XAMPP):** sebelum menimpa `C:\xampp\htdocs\gods-eye\`, salin folder lama ke
-  `C:\xampp\htdocs\gods-eye.bak-YYYYMMDD\`.
-- **Rollback:** hapus isi `gods-eye\`, salin kembali isi folder `.bak-` terakhir → refresh browser.
+- **Backup deploy:** tidak ada folder deploy manual lagi (backend serve `dist/` langsung
+  dari repo). Untuk kembali ke versi lama: `git checkout <commit-lama>` → `npm run build`
+  → `npm start`.
 - Tidak ada database → tidak ada prosedur backup/restore data.
 
 ---
@@ -225,8 +227,8 @@ Urutan: panel "Log koneksi" di app → DevTools Console → Network tab (lihat r
 - **Panel "Log koneksi"** di dashboard = monitor bawaan: event INFO/OK/PERINGATAN/GALAT
   + timestamp WIB + counter event + tombol Bersihkan (hanya menyembunyikan tampilan).
 - **Popover badge status** = metrik sesi: bitrate aktif, resolusi, estimasi FPS, stall, reconnect, uptime.
-- Belum ada monitoring server (tanpa backend — by design). Bila kelak ada backend,
-  runbook ini direvisi.
+- **Backend:** log console (`[gods-eye] …`) saat start; `GET /api/health` untuk cek hidup
+  (`frontendBuilt:false` = lupa `npm run build`).
 
 ---
 
@@ -236,18 +238,22 @@ Urutan: panel "Log koneksi" di app → DevTools Console → Network tab (lihat r
 gods_eye/
 ├── README.md                 # Ringkasan + cara jalan cepat
 ├── .gitignore                # node_modules/, dist/, bobot model (*.onnx/*.pt/…)
+├── backend/                  # ★ BACKEND (#59) — Node.js + Express
+│   ├── server.js             # Reverse proxy /cctv/* + serve dashboard/dist + /api/health
+│   ├── package.json          # express + http-proxy-middleware (tanpa node_modules/)
+│   └── README.md             # Cara jalan backend + env var + batasan
 ├── dashboard/                # App (React 18 + Vite + TS + hls.js) — TANPA node_modules/ & dist/
 │   ├── src/
 │   │   ├── components/       # StreamPlayer, StreamHealthBadge, CameraSelector, ConnectionLog
-│   │   ├── config/cameras.ts # SATU-SATUNYA tempat URL stream
+│   │   ├── config/cameras.ts # SATU-SATUNYA tempat URL stream (selalu path /cctv/… sejak #59)
 │   │   ├── detection/        # KONTRAK SAJA (types) — detection-ready, tanpa model
 │   │   └── lib/              # streamHealth (mesin status+backoff), log, useStreamSession
 │   ├── index.html
 │   ├── package.json / package-lock.json
-│   ├── vite.config.ts        # base './'
+│   ├── vite.config.ts        # base './' + server.proxy /cctv (mode dev)
 │   └── tsconfig*.json
 └── docs/
-    ├── arsitektur.md         # Sentot #49 — arsitektur Opsi C Hybrid
+    ├── arsitektur.md         # Sentot #49 — arsitektur Opsi C Hybrid (+ Addendum #59)
     ├── mockup-dashboard.html # Prapto #50 — varian 1 (PILIHAN Rama)
     ├── mockup-varian-2.html  # Prapto #51 — varian 2
     ├── mockup-varian-3.html  # Prapto #51 — varian 3
@@ -269,6 +275,12 @@ gods_eye/
 | 58 | Gunet | **Bugfix CORS**: Vite dev-proxy `/cctv/*` → server CCTV; `getStreamUrl()`
   (DEV = proksi, PROD = absolut); runbook §1/§4/§6/§8 diperbarui + batasan segmen absolut.
   ⚠️ "Stream tampil" WAJIB verifikasi Rama di laptop (VM diblokir WAF — tidak bisa diuji). |
+| 59 | Gunet | **Backend fullstack** (perintah langsung Rama 15 Okt 2026 14:07 WIB):
+  `backend/` (Express: reverse proxy `/cctv/*` → server CCTV + serve `dashboard/dist`
+  + `GET /api/health`); `cameras.ts` selalu path relatif `/cctv/…` (logika DEV/PROD dihapus);
+  runbook + README direvisi. Teruji lokal: `/` → 200, `/api/health` → ok, `/cctv/*` teruskan
+  (500 dari VM = upstream diblokir WAF, routing benar).
+  ⚠️ "Video tampil" WAJIB verifikasi Rama di laptop (jaringan rumah). |
 
 Berikutnya (sesuai urutan Meeting #4): Rama pilih hasil benchmark model i5 →
 pencabutan larangan detection → fase deteksi (arsitektur ulang + audit Cipher fokus model & UU PDP).
