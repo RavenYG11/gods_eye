@@ -195,9 +195,20 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
       "Anti-buffering aktif — tertinggal ±5 dtk (sengaja, agar gambar tidak tersendat)".
       Log koneksi mencatat "Anti-buffering: posisi diset 5 dtk di belakang live edge".
 - [ ] **#60 — Deteksi kendaraan:** box muncul di atas kendaraan —
-      **BIRU = ke atas, HIJAU = ke bawah**, label "mobil/motor/truk kecil/truk besar
-      + % + #id". Chip kanan-bawah "Deteksi: N fps" (N ≈ 8–15 di laptop).
-      Tombol ◎ mematikan/menyalakan overlay.
+      **BIRU = ke atas, HIJAU = ke bawah**, label "mobil/motor + % + #id"
+      (#62: kelas truk DIHAPUS — hanya motor & mobil). Chip kanan-bawah
+      "Deteksi: N fps" (N ≈ 8–15 di laptop). Tombol ◎ mematikan/menyalakan overlay.
+- [ ] **#62 — Anti-kedip:** box TIDAK boleh muncul-hilang sepersekian detik.
+      Uji: amati 1 kendaraan lewat — box mengikuti mulus; bila model sesaat
+      gagal deteksi, box tetap tampil ±0,7 dtk (sedikit redup = posisi terakhir
+      tracker), lalu hilang bila kendaraan benar-benar pergi. Box baru muncul
+      hanya setelah kendaraan terdeteksi 2 frame (tidak pop-in).
+- [ ] **#62 — Layout:** di 1366×768 dan 1920×1080, seluruh player 16:9 terlihat
+      TANPA scroll/maximize (lebar otomatis menyesuaikan tinggi viewport).
+- [ ] **#62 — Slider threshold:** pojok kanan bawah player ada kontrol
+      "Threshold 0.50" + slider 0,10–0,90. Geser → nilai berubah, box
+      bertambah/berkurang mulai frame berikutnya TANPA reload. Naikkan bila
+      box palsu; turunkan bila kendaraan jauh tak terdeteksi.
 - [ ] Pagar scope tetap: **tanpa tombol record**, tanpa face recognition.
       (Panel deteksi kini ADA — larangan dicabut Rama 15 Okt 2026 14:37 WIB.)
 
@@ -225,12 +236,31 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 | `HLS tidak didukung browser ini.` | Browser tanpa MSE (atau sangat lawas) | Pakai Chrome/Edge terbaru |
 | Chip "Model deteksi gagal dimuat" | `yolo26n.onnx` belum diunduh / build sebelum unduh | `scripts\unduh-model.bat` → `npm run build` ulang; klik chip untuk coba lagi |
 | Deteksi lambat (< 5 fps) di laptop | CPU lemah / tab lain berat | Tutup tab berat; ORT otomatis 1 thread bila tanpa COOP/COEP — pastikan via backend/:3000 |
+| Box deteksi berkedip (muncul-hilang) | (Pra-#62) render dari raw detection | **Sudah diperbaiki #62** (render dari tracker + grace ±0,7 dtk + EMA). Bila masih kedip setelah pull terbaru: catat pola (kendaraan jauh/dekat?) lalu lapor — jangan edit ambang dulu |
+| Box palsu bermunculan (bayangan, marka jalan) | Ambang confidence terlalu rendah | **Naikkan slider "Threshold"** (pojok kanan bawah player) — mis. 0,60–0,70; berlaku instan |
+| Kendaraan jauh tidak terdeteksi | Ambang confidence terlalu tinggi | **Turunkan slider "Threshold"** — mis. 0,30–0,40; bila tetap hilang, itu batas resolusi model, bukan bug |
 | Badge `◌ BUFFERING` terus-menerus | Bandwidth tidak cukup untuk level 1080p | App otomatis turunkan kualitas (stall > 10 dtk); bila tetap, cek kecepatan internet |
 | `npm install` gagal | Node terlalu lama / cache korup | `node -v` (butuh 18+); `npm cache clean --force` lalu ulangi |
 | Log koneksi kosong | JS error / bundle gagal load | Buka DevTools → Console; pastikan `npm run build` sukses & `dist/` lengkap |
 
 **Aturan diagnosis (gaya kerja Epthal): periksa log sebelum menyimpulkan.**
 Urutan: panel "Log koneksi" di app → `GET /api/health` → DevTools Console → Network tab (lihat request `.m3u8`/`.ts`) → baru simpulkan.
+
+### 8.1 Threshold deteksi (#62) — dokumentasi singkat
+
+- **Default 0,5** (seimbang). Dasar: riset #48 §4.1 — default conf Ultralytics
+  0,25 dioptimalkan untuk skor mAP benchmark, bukan tampilan live; model
+  NMS-free YOLO26n memancarkan 300 proposal/frame sehingga ambang rendah
+  membanjiri overlay dengan kotak borderline yang ikut berkedip.
+- **Slider live** di pojok kanan bawah player: range 0,10–0,90 (langkah 0,05),
+  nilai tampil di samping label. Berlaku mulai frame berikutnya — tanpa reload
+  model/worker/halaman.
+- **Aturan praktis:** box palsu → naikkan; kendaraan jauh hilang → turunkan.
+  Perubahan tidak disimpan permanen (kembali ke 0,5 saat halaman di-reload) —
+  bila Rama menemukan nilai favoritnya, catat angkanya lalu minta diubah jadi
+  default di `dashboard/src/detection/vehicleConfig.ts` (`CONFIDENCE_THRESHOLD`).
+- **Kelas yang dideteksi:** hanya **motor** (COCO 3) & **mobil** (COCO 2).
+  Kelas truk dihapus total per koreksi Rama 15 Okt 2026 (#62).
 
 ---
 

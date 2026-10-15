@@ -8,18 +8,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CAPTURE_FPS,
+  CONFIDENCE_THRESHOLD,
   WorkerVehicleDetector,
   modelFallbackUrl,
   modelUrl,
   ortWasmBase,
 } from "../detection";
-import type { Detection } from "../detection";
+import type { TrackedDetection } from "../detection";
 
 export type DetStatus = "off" | "loading" | "ready" | "error";
 
 export interface DetectionState {
   status: DetStatus;
-  detections: Detection[];
+  /**
+   * #62: hasil dari WORKER = TrackedDetection (trackId + direction + stale),
+   * BUKAN raw detection. Kontrak Detector tetap Detection[] — cast aman di
+   * sini karena worker selalu mengembalikan keluaran CentroidTracker.
+   */
+  detections: TrackedDetection[];
   /** fps deteksi aktual (hasil inferensi per detik, bukan fps video). */
   detFps: number | null;
   /** Hitung kendaraan per label pada frame terakhir. */
@@ -29,6 +35,9 @@ export interface DetectionState {
   enabled: boolean;
   toggle: () => void;
   retry: () => void;
+  /** #62: ambang confidence live (0,1–0,9) + pengubahnya (slider UI). */
+  threshold: number;
+  setThreshold: (v: number) => void;
 }
 
 /** Jendela hitung fps deteksi: N hasil terakhir. */
@@ -39,13 +48,17 @@ export function useDetection(
 ): DetectionState {
   const [enabled, setEnabled] = useState(true); // #60: deteksi ON by default
   const [status, setStatus] = useState<DetStatus>("off");
-  const [detections, setDetections] = useState<Detection[]>([]);
+  const [detections, setDetections] = useState<TrackedDetection[]>([]);
   const [detFps, setDetFps] = useState<number | null>(null);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
   const [retryTick, setRetryTick] = useState(0);
+  // #62: ambang confidence — default dari vehicleConfig, bisa digeser live.
+  const [threshold, setThresholdState] = useState(CONFIDENCE_THRESHOLD);
 
   const detectorRef = useRef<WorkerVehicleDetector | null>(null);
+  const thresholdRef = useRef(threshold);
+  thresholdRef.current = threshold;
   const stampsRef = useRef<number[]>([]);
   const mountedRef = useRef(true);
 
@@ -58,6 +71,13 @@ export function useDetection(
 
   const toggle = useCallback(() => setEnabled((e) => !e), []);
   const retry = useCallback(() => setRetryTick((t) => t + 1), []);
+  // #62: kirim ke worker yang sedang aktif; worker baru (retry/toggle)
+  // menerima nilai terkini lewat thresholdRef saat init selesai.
+  const setThreshold = useCallback((v: number) => {
+    const clamped = Math.min(0.9, Math.max(0.1, v));
+    setThresholdState(clamped);
+    detectorRef.current?.setThreshold(clamped);
+  }, []);
 
   useEffect(() => {
     if (!enabled) {
@@ -86,6 +106,8 @@ export function useDetection(
       .then(() => {
         if (cancelled || !mountedRef.current) return;
         setStatus("ready");
+        // Terapkan ambang terkini (slider mungkin digeser sebelum ready).
+        detector.setThreshold(thresholdRef.current);
         // Loop tangkap frame: tiap 1/CAPTURE_FPS dtk, lewati bila worker sibuk.
         timer = window.setInterval(() => {
           const video = getVideo();
@@ -105,7 +127,7 @@ export function useDetection(
                 const span = (stamps[stamps.length - 1] - stamps[0]) / 1000;
                 if (span > 0) setDetFps(+(stamps.length / span).toFixed(1));
               }
-              setDetections(dets);
+              setDetections(dets as TrackedDetection[]);
               const c: Record<string, number> = {};
               for (const d of dets) c[d.label] = (c[d.label] ?? 0) + 1;
               setCounts(c);
@@ -141,5 +163,7 @@ export function useDetection(
     enabled,
     toggle,
     retry,
+    threshold,
+    setThreshold,
   };
 }

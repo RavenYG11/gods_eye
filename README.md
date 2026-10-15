@@ -80,7 +80,7 @@ gods-eye/
 | **Backend Node.js + Express (#59): reverse proxy `/cctv/*` → server CCTV + serve `dashboard/dist` + `GET /api/health`** — satu origin, CORS hilang permanen di semua environment | Perintah langsung Rama 15 Okt 2026 14:07 WIB; backend/README.md; runbook.md §1 |
 | `detection/` = implementasi YOLO26n via kontrak `Detector`/`DetectionPort`; dashboard tak pernah import model langsung | arsitektur.md §2; perintah Rama 15 Okt 2026 14:37 WIB |
 | **Anti-buffering: player sengaja dijaga ±5 dtk di belakang live edge** (trik web resmi Bekasi); strip delay tampil JUJUR "±5 dtk (sengaja)" | temuan Rama 15 Okt 2026; arsitektur.md §4 |
-| Box deteksi: **BIRU = kendaraan ke atas, HIJAU = ke bawah** (arah dari delta y centroid); kelas: motor, mobil, truk kecil, truk besar | assignment #60 |
+| Box deteksi: **BIRU = kendaraan ke atas, HIJAU = ke bawah** (arah dari delta y centroid); kelas: **motor, mobil** (#62: truk dihapus total per koreksi Rama 15 Okt 2026); box dirender dari tracker + persistensi ±0,7 dtk + smoothing EMA | assignment #60, #62 |
 | Bobot `.onnx` tidak di-commit (`.gitignore`); unduh via `scripts/unduh-model.*`; fallback PicoDet = slot kosong (format belum terverifikasi) | arsitektur.md §2, §5 |
 | Header COOP/COEP di backend + Vite dev (syarat SharedArrayBuffer untuk ORT WASM multi-thread) | pola Ventra 2026-10-14 |
 | URL stream hanya di `config/cameras.ts`; `getStreamUrl()` selalu path relatif `/cctv/…` (logika DEV/PROD dihapus #59) | arsitektur.md §3 + Addendum #59 |

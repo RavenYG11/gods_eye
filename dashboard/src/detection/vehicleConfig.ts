@@ -5,8 +5,16 @@
 /** Ukuran input model (YOLO26n diekspor untuk 640×640). FAKTA: riset #48. */
 export const MODEL_INPUT_SIZE = 640;
 
-/** Ambang kepercayaan minimum — di bawah ini kotak dibuang. */
-export const CONFIDENCE_THRESHOLD = 0.35;
+/**
+ * Ambang kepercayaan minimum — di bawah ini kotak dibuang.
+ * #62: default 0,5 (seimbang). Bukti: riset #48 §4.1 — default conf Ultralytics
+ * 0,25 (dioptimalkan untuk mAP benchmark, bukan untuk tampilan live);
+ * model NMS-free YOLO26n memancarkan 300 proposal/frame sehingga ambang rendah
+ * membanjiri overlay dengan kotak borderline yang ikut berkedip. 0,5 memotong
+ * sebagian besar false positive tanpa mengorbankan kendaraan jelas —
+ * dan Rama bisa menggesernya live via slider di UI (range 0,1–0,9).
+ */
+export const CONFIDENCE_THRESHOLD = 0.5;
 
 /** Target frame deteksi per detik (video 60fps TIDAK boleh block — §60). */
 export const CAPTURE_FPS = 10;
@@ -26,24 +34,15 @@ export const MAX_INFLIGHT = 1;
 /**
  * Pemetaan class-id COCO → label kendaraan GODS EYE.
  * FAKTA: YOLO26n dilatih di COCO 80 kelas (Ultralytics); id 2 = car,
- * id 3 = motorcycle, id 7 = truck (konvensi COCO baku).
- * Kelas lain (bus=5, orang=0, dst) SENGAJA diabaikan — scope #60 hanya
- * 4 kelas: motor, mobil, truk kecil, truk besar.
+ * id 3 = motorcycle (konvensi COCO baku).
+ * #62 (koreksi Rama, 15 Okt 2026): HANYA motor & mobil. Kelas truk (id 7)
+ * DIHAPUS TOTAL — logika split "truk kecil/besar" (TRUCK_BIG_AREA_RATIO)
+ * ikut dibuang, bukan sekadar disembunyikan.
  */
-export const COCO_TO_VEHICLE: Record<number, "mobil" | "motor" | "truk"> = {
+export const COCO_TO_VEHICLE: Record<number, "mobil" | "motor"> = {
   2: "mobil",
   3: "motor",
-  7: "truk",
 };
-
-/**
- * "truk" COCO dipecah jadi "truk kecil" vs "truk besar" berdasar luas bbox
- * relatif terhadap luas frame.
- * ASUMSI (belum ada ground truth lapangan): bbox truk seluas ≥ 2% frame
- * dianggap "truk besar" (dekat kamera), di bawah itu "truk kecil".
- * Kalibrasi ulang angka ini setelah uji lapangan di laptop Rama.
- */
-export const TRUCK_BIG_AREA_RATIO = 0.02;
 
 /** Warna box overlay per arah (kontrak visual #60 — JANGAN diubah diam-diam). */
 export const DIRECTION_COLORS = {

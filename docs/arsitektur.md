@@ -93,7 +93,7 @@ langsung — selalu lewat `DetectionPort` (factory + interface di
 **Fakta model (riset #48, diverifikasi dari file asli 15 Okt 2026):**
 YOLO26n resmi Ultralytics — input 640×640, output `[1,300,6]` =
 `[x1,y1,x2,y2,skor,kelas]` final NMS-free; kelas COCO: 2=mobil, 3=motor,
-7=truk ("truk" dipecah jadi kecil/besar via ASUMSI luas bbox §vehicleConfig).
+7=truk (DIABAIKAN — koreksi Rama #62, 15 Okt 2026: hanya motor & mobil).
 URL: `https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.onnx`
 (9.941.957 byte). Lisensi model: AGPL-3.0 (Ultralytics) — bobot tidak
 di-commit; ONNX Runtime: MIT.

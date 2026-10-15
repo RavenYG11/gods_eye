@@ -8,7 +8,6 @@ import {
   COCO_TO_VEHICLE,
   CONFIDENCE_THRESHOLD,
   MODEL_INPUT_SIZE,
-  TRUCK_BIG_AREA_RATIO,
 } from "./vehicleConfig";
 import type { Detection } from "./types";
 
@@ -40,23 +39,10 @@ export function unletterbox(
 }
 
 /**
- * Pecah "truk" → "truk kecil" | "truk besar" berdasar luas relatif.
- * ASUMSI: lihat TRUCK_BIG_AREA_RATIO di vehicleConfig.ts.
- */
-export function splitTruckLabel(
-  bbox: [number, number, number, number],
-  frameW: number,
-  frameH: number,
-): "truk kecil" | "truk besar" {
-  const area = bbox[2] * bbox[3];
-  const ratio = area / (frameW * frameH);
-  return ratio >= TRUCK_BIG_AREA_RATIO ? "truk besar" : "truk kecil";
-}
-
-/**
  * Parse output mentah YOLO26n [1, 300, 6] → Detection[] dalam piksel frame sumber.
  * Tiap baris = [x1, y1, x2, y2, skor, classId] dalam koordinat 640 letterbox.
  * NMS-free: skor & kelas sudah final — TIDAK ada NMS di sini (riset #48).
+ * #62: hanya kelas motor & mobil (koreksi Rama) — classId lain dibuang.
  */
 export function parseYolo26nOutput(
   data: ArrayLike<number>,
@@ -79,8 +65,8 @@ export function parseYolo26nOutput(
     if (!(score >= threshold)) continue; // NaN pun gugur di sini
 
     const classId = Math.round(data[base + 5]);
-    const vehicle = COCO_TO_VEHICLE[classId];
-    if (!vehicle) continue; // bukan motor/mobil/truk → buang (scope #60)
+    const label = COCO_TO_VEHICLE[classId];
+    if (!label) continue; // bukan motor/mobil → buang (koreksi Rama #62)
 
     const p1 = unletterbox(data[base], data[base + 1], opts.lb);
     const p2 = unletterbox(data[base + 2], data[base + 3], opts.lb);
@@ -95,10 +81,6 @@ export function parseYolo26nOutput(
     if (w <= 2 || h <= 2) continue;
 
     const bbox: [number, number, number, number] = [x, y, w, h];
-    const label =
-      vehicle === "truk"
-        ? splitTruckLabel(bbox, opts.srcW, opts.srcH)
-        : vehicle;
 
     out.push({
       classId,
