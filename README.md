@@ -1,12 +1,14 @@
 # GODS EYE v0.1 — Dashboard CCTV Kota Bekasi
 
 Viewer web **1 kamera** CCTV Bekasi (HLS, 1080p) — **fullstack**: backend Node.js
-(reverse proxy anti-CORS + static server) + frontend React.
-Dibangun oleh Gunet (Software Engineer), Assignment #52 (dashboard) + #59 (backend), 15 Okt 2026.
+(reverse proxy anti-CORS + static server) + frontend React **+ deteksi kendaraan (YOLO26n)**.
+Dibangun oleh Gunet (Software Engineer), Assignment #52 (dashboard) + #59 (backend)
++ **#60 (anti-buffering delay + object detection)**, 15 Okt 2026.
 
 > Scope v0.1 **DIKUNCI** (Meeting #4 D1–D6): stream viewer 1 kamera saja.
-> Object detection **DILARANG** dibangun sampai Rama mencabut larangan +
-> hasil benchmark i5 keluar. Tanpa rekaman. Face recognition OUT OF SCOPE permanen.
+> **Perintah langsung Rama 15 Okt 2026 14:37 WIB** ("langsung bikin object
+> detectionnya") **MENCABUT larangan deteksi** — #60 membangun deteksi
+> kendaraan (YOLO26n, ONNX). Tanpa rekaman. Face recognition OUT OF SCOPE permanen.
 > Perintah Rama 15 Okt 2026 14:07 WIB ("kenapa ga fullstack, suruh gunet bikin backendnya")
 > membatalkan keputusan frontend-only — v0.1 kini fullstack (#59).
 
@@ -15,6 +17,8 @@ Dibangun oleh Gunet (Software Engineer), Assignment #52 (dashboard) + #59 (backe
 ```bash
 cd dashboard
 npm install
+scripts\unduh-model.bat        # Windows SEKALI saja → public/models/yolo26n.onnx
+                               # (Linux/Mac: bash scripts/unduh-model.sh)
 npm run build        # sekali per ada perubahan frontend → dashboard/dist/
 cd ../backend
 npm install
@@ -43,7 +47,18 @@ gods-eye/
 │   │   │   ├── StreamHealthBadge.tsx # Badge LIVE/DELAY/BUFFERING/… + popover metrik
 │   │   │   ├── CameraSelector.tsx    # Disabled, 1 item (siap multi-kamera)
 │   │   │   └── ConnectionLog.tsx     # ★ Panel "Log koneksi" (instruksi Rama)
-│   │   ├── detection/              # ★ KONTRAK SAJA (types.ts + index.ts re-export)
+│   │   ├── detection/              # ★ IMPLEMENTASI YOLO26n (#60, via kontrak DetectionPort)
+│   │   │   ├── types.ts            # Kontrak data (Detection, Detector, + direction)
+│   │   │   ├── vehicleConfig.ts    # Semua angka ajaib + URL model
+│   │   │   ├── yolo26n.ts          # Parse output [1,300,6] NMS-free, letterbox
+│   │   │   ├── tracker.ts          # CentroidTracker: trackId + arah dari delta y
+│   │   │   ├── onnxDetector.ts     # Detector via ONNX Runtime WASM (di worker)
+│   │   │   ├── detection.worker.ts # Worker inferensi ~10fps, video 60fps tak block
+│   │   │   └── workerDetector.ts   # Pembungkus worker → Detector (main thread)
+│   │   ├── components/DetectionOverlay.tsx # Canvas box: BIRU=ke atas, HIJAU=ke bawah
+│   │   ├── lib/useDetection.ts     # Hook: worker lifecycle + loop tangkap frame
+│   │   ├── scripts/unduh-model.bat # ★ Unduh yolo26n.onnx (sekali, tidak di-commit)
+│   │   ├── scripts/copy-ort-wasm.mjs# Salin .wasm ORT → public/ort (prebuild)
 │   │   ├── config/cameras.ts       # SATU-SATUNYA tempat URL stream (selalu /cctv/… sejak #59)
 │   │   ├── lib/streamHealth.ts     # Mesin status + auto-reconnect + pencatat log
 │   │   ├── lib/useStreamSession.ts # Jembatan engine → React
@@ -63,7 +78,11 @@ gods-eye/
 |---|---|
 | React 18 + Vite + TS + hls.js | arsitektur.md §1 |
 | **Backend Node.js + Express (#59): reverse proxy `/cctv/*` → server CCTV + serve `dashboard/dist` + `GET /api/health`** — satu origin, CORS hilang permanen di semua environment | Perintah langsung Rama 15 Okt 2026 14:07 WIB; backend/README.md; runbook.md §1 |
-| `detection/` hanya kontrak (tanpa stub `detect()`) | arsitektur.md §2 |
+| `detection/` = implementasi YOLO26n via kontrak `Detector`/`DetectionPort`; dashboard tak pernah import model langsung | arsitektur.md §2; perintah Rama 15 Okt 2026 14:37 WIB |
+| **Anti-buffering: player sengaja dijaga ±5 dtk di belakang live edge** (trik web resmi Bekasi); strip delay tampil JUJUR "±5 dtk (sengaja)" | temuan Rama 15 Okt 2026; arsitektur.md §4 |
+| Box deteksi: **BIRU = kendaraan ke atas, HIJAU = ke bawah** (arah dari delta y centroid); kelas: motor, mobil, truk kecil, truk besar | assignment #60 |
+| Bobot `.onnx` tidak di-commit (`.gitignore`); unduh via `scripts/unduh-model.*`; fallback PicoDet = slot kosong (format belum terverifikasi) | arsitektur.md §2, §5 |
+| Header COOP/COEP di backend + Vite dev (syarat SharedArrayBuffer untuk ORT WASM multi-thread) | pola Ventra 2026-10-14 |
 | URL stream hanya di `config/cameras.ts`; `getStreamUrl()` selalu path relatif `/cctv/…` (logika DEV/PROD dihapus #59) | arsitektur.md §3 + Addendum #59 |
 | Status LIVE/DELAY/BUFFERING/RECONNECTING/OFFLINE + backoff 1→2→5→15→30 | arsitektur.md §4 |
 | Stall > 10 dtk + multi-bitrate → turunkan kualitas dulu | arsitektur.md §4 butir 4 |
@@ -89,11 +108,18 @@ gods-eye/
   Audit keamanan Cipher #53: lulus tanpa temuan kritis.
 - Runbook operasional (Epthal #55, direvisi Gunet #59): **`docs/runbook.md`**.
 
-## Berikutnya (sesuai urutan Meeting #4)
+## Berikutnya (sesuai urutan Meeting #4 + perintah #60)
 
-1. **Rama (laptop, jaringan rumah):** jalankan checklist verifikasi `docs/runbook.md` §7
-   (`git pull` → `npm install` (dashboard + backend) → `npm run build` → `npm start`
-   di `backend/` → badge LIVE, log koneksi, uji cabut WiFi).
-2. **Rama:** jalankan paket benchmark model i5 (Magna, #48) → putuskan model deteksi.
-3. Setelah larangan detection dicabut: arsitektur ulang fase deteksi → audit Cipher
-   (fokus: sumber model, UU PDP) → QA ulang.
+> **WORKFLOW BARU (perintah Rama 15 Okt 2026):** build → lapor ke Rama dulu →
+> push → lapor lagi. **#60 BELUM di-push** — menunggu review Rama.
+
+1. **Rama (laptop, jaringan rumah):** `scripts\unduh-model.bat` (sekali) →
+   `git pull` → `npm install` (dashboard + backend) → `npm run build` →
+   `npm start` di `backend/` → buka http://localhost:3000. Checklist:
+   - badge DELAY ±5 dtk + strip "Anti-buffering aktif" (BUKAN buffering),
+   - box kendaraan muncul: BIRU = ke atas, HIJAU = ke bawah,
+   - chip "Deteksi: N fps" di pojok kanan bawah video,
+   - uji cabut WiFi → BUFFERING → RECONNECTING → kembali DELAY ±5 dtk.
+2. **Rama (opsional tapi disarankan):** jalankan paket benchmark model i5
+   (Magna, #48) → angka fps/latensi final YOLO26n di CPU i5 miliknya.
+3. Setelah review Rama: push → lapor → (fase berikut) counting in/out + DB.

@@ -9,6 +9,11 @@
 //   2. FILE STATIS frontend dari ../dashboard/dist (hasil `npm run build`)
 //      → satu server melayani app + proksi = CORS hilang total.
 //
+// #60: header COOP/COEP (cross-origin isolation) — WAJIB untuk ONNX Runtime
+// WASM multi-thread (SharedArrayBuffer). Pola yang sama dipakai Ventra
+// (vite.config.ts + .htaccess, pelajaran 2026-10-14). Semua aset same-origin
+// sehingga COEP require-corp aman di sini.
+//
 // Cara jalan:  cd backend && npm install && npm start
 //              → buka http://localhost:3000
 //
@@ -32,6 +37,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, "..", "dashboard", "dist");
 
 const app = express();
+
+// ---------------------------------------------------------------------------
+// #60: Cross-origin isolation (COOP + COEP) — syarat SharedArrayBuffer untuk
+// ONNX Runtime WASM multi-thread (deteksi kendaraan). Tanpa ini, ORT
+// otomatis turun ke 1 thread (atau gagal total di versi baru).
+// ---------------------------------------------------------------------------
+app.use((_req, res, next) => {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // 1) Reverse proxy: /cctv/* → <UPSTREAM>/*

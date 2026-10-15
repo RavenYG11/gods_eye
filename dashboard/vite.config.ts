@@ -14,7 +14,18 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   base: "./",
+  // #60: worker deteksi memakai dynamic import (onnxruntime-web) → butuh
+  // format ES agar code-splitting worker tidak gagal (iife tidak didukung).
+  worker: {
+    format: "es",
+  },
   server: {
+    // #60: COOP/COEP saat DEV — paritas dengan backend (server.js).
+    // Syarat SharedArrayBuffer untuk ONNX Runtime WASM multi-thread.
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+    },
     proxy: {
       "/cctv": {
         target: "https://eofficev2.bekasikota.go.id",
