@@ -48,9 +48,14 @@ Manifest mesin: `dashboard/public/dataset/dataset.json`
 ## Kelola Dataset via dashboard (#72, 16 Okt 2026 — FINAL: DATABASE)
 
 **Keputusan Rama (final, 16 Okt 2026 ~10:18 WIB):** gambar dataset disimpan
-di **database SQLite** (`backend/data/dataset.db`, via `better-sqlite3`),
-BUKAN file. Pendekatan file-based awal (`backend/dataset.js` +
+di **database SQLite** (`backend/data/dataset.db`, via `node:sqlite` bawaan
+Node — #73), BUKAN file. Pendekatan file-based awal (`backend/dataset.js` +
 `dashboard/public/dataset/uploads/`) DIBATALKAN dan dihapus dari repo.
+
+**Syarat versi Node (#73):** backend WAJIB jalan di **Node ≥ 22.5**
+(`node:sqlite` adalah modul bawaan — tidak ada di Node 18/20).
+`backend/package.json` → `"engines": {"node": ">=22.5"}`.
+Laptop Rama: Node v24.15.0 ✓ (memenuhi syarat; `npm install` tanpa compile).
 
 Panel **"Kelola Dataset"** di dashboard (kolom kanan, bawah card
 "Deteksi kendaraan") — cara resmi menambah sampel tanpa edit file manual:
@@ -71,7 +76,7 @@ duplikat ditolak (cek hash SHA-256 isi file → `409`).
 
 | Lapisan | File | Peran |
 |---|---|---|
-| DB engine | `better-sqlite3` (npm) | Dipilih karena jalan di Node 18/20/22/24 dengan prebuilt binary Windows — `npm install` biasa cukup, tanpa compile. API sinkron → kode sederhana. |
+| DB engine | `node:sqlite` (bawaan Node ≥22.5, #73) | NOL native dependency, NOL compile — `npm install` selalu sukses. Menggantikan `better-sqlite3` (#72) yang TERBUKTI GAGAL di laptop Rama: v13.0.3 tidak punya prebuilt binary untuk ABI Node 24 → fallback node-gyp rebuild → gagal (tidak ada Visual Studio). API sinkron → kode sederhana. |
 | Modul DB | `backend/lib/dataset-db.js` | Skema `dataset_images(id, label, mime, data, sha256 UNIQUE, source, created_at)`; `openDatasetDb`, `seedIfEmpty`, `addImage` (lempar `DUPLICATE`), `listImages` (metadata TANPA blob), `getImage`, `deleteImage`. |
 | Endpoint | `backend/server.js` | Lihat tabel API di bawah. DB dibuat otomatis di `backend/data/dataset.db` (**di-gitignore** — jangan di-commit). |
 | Modul frontend | `dashboard/src/lib/dataset.ts` | **Satu-satunya** jalur akses dataset: `listDataset()`, `getDatasetImageUrl(id)` (fetch blob → objectURL, cache + revoke), `uploadDatasetImage(file\|{dataUrl}, label, source)`, `deleteDatasetImage(id)`. |

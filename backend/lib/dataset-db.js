@@ -1,18 +1,20 @@
-// GODS EYE #72 — modul database dataset kendaraan (SQLite via better-sqlite3).
+// GODS EYE #73 — modul database dataset kendaraan (SQLite via node:sqlite).
 //
-// KEPUTUSAN ENGINE (#72, Gunet): better-sqlite3, bukan node:sqlite bawaan.
-// Alasan: node:sqlite butuh Node >= 22.5 — versi Node di laptop Windows Rama
-// tidak terverifikasi; better-sqlite3 jalan di Node 18/20/22/24 dan membawa
-// prebuilt binary Windows sehingga `npm install` biasa cukup (tanpa compile).
-// API sinkron → kode sederhana, tanpa dependency selain better-sqlite3.
+// KEPUTUSAN ENGINE (#73, menggantikan #72): node:sqlite (modul BAWAAN Node
+// >= 22.5), NOL native dependency, NOL compile.
+// Alasan: better-sqlite3@13.0.3 TIDAK punya prebuilt binary untuk ABI Node 24
+// → `npm install` di laptop Rama (Node v24.15.0 Windows) fallback ke
+// node-gyp rebuild dari source → GAGAL karena tidak ada Visual Studio.
+// node:sqlite ikut di dalam Node sendiri: `npm install` selalu sukses,
+// tanpa compiler, tanpa download binary tambahan.
 //
 // Skema: dataset_images(id, label, mime, data, sha256 UNIQUE, source, created_at)
 //   label  : 'mobil' | 'motor'
 //   source : 'upload' | 'paste' | 'seed'
 //   data   : BLOB biner gambar (maks 5MB, divalidasi di server.js)
-//   sha256 : UNIQUE — tolak duplikat diam-diam (409 dari endpoint)
+//   sha256 : UNIQUE — tolak duplikat (409 dari endpoint)
 
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -25,9 +27,10 @@ let db = null;
 /** Buka (atau buat) database di dbPath. Idempoten. */
 export function openDatasetDb(dbPath) {
   if (db) return db;
-  mkdirSync(path.dirname(dbPath), { recursive: true });
-  db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
+  if (dbPath) mkdirSync(path.dirname(dbPath), { recursive: true });
+  // Tanpa argumen → database in-memory (dipakai hanya sebagai fallback aman).
+  db = dbPath ? new DatabaseSync(dbPath) : new DatabaseSync();
+  db.exec("PRAGMA journal_mode = WAL;");
   db.exec(`
     CREATE TABLE IF NOT EXISTS dataset_images (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,8 +41,8 @@ export function openDatasetDb(dbPath) {
       source     TEXT NOT NULL DEFAULT 'upload' CHECK (source IN ('upload','paste','seed')),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE INDEX IF NOT EXISTS idx_dataset_label ON dataset_images(label);
   `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_dataset_label ON dataset_images(label);`);
   return db;
 }
 
@@ -56,8 +59,8 @@ export function sha256Hex(buf) {
  */
 export function seedIfEmpty(searchDirs) {
   const database = db ?? openDatasetDb();
-  const { c } = database.prepare("SELECT COUNT(*) AS c FROM dataset_images").get();
-  if (c > 0) return 0;
+  const row = database.prepare("SELECT COUNT(*) AS c FROM dataset_images").get();
+  if (Number(row?.c ?? 0) > 0) return 0;
   let imported = 0;
   for (const label of ["motor", "mobil"]) {
     const fname = `${label}-1.png`;
@@ -112,12 +115,25 @@ export function getImage(id) {
   const database = db ?? openDatasetDb();
   const row = database
     .prepare("SELECT id, label, mime, data, source FROM dataset_images WHERE id = ?")
-    .get(id);
-  return row ? { ...row, id: Number(row.id) } : null;
+    .get(Number(id));
+  if (!row) return null;
+  // node:sqlite mengembalikan BLOB sebagai Buffer/Uint8Array — samakan ke Buffer
+  // agar pemanggil (res.send, .length) berperilaku identik.
+  const data = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data);
+  return { id: Number(row.id), label: row.label, mime: row.mime, data, source: row.source };
 }
 
-/** Hapus satu gambar. true bila ada yang terhapus. */
+/**
+ * Hapus satu gambar. Melempar Error('SEED_PROTECTED') bila source = 'seed'.
+ * Mengembalikan true bila ada yang terhapus, false bila id tidak ada.
+ */
 export function deleteImage(id) {
   const database = db ?? openDatasetDb();
-  return database.prepare("DELETE FROM dataset_images WHERE id = ?").run(id).changes > 0;
+  const row = database
+    .prepare("SELECT source FROM dataset_images WHERE id = ?")
+    .get(Number(id));
+  if (!row) return false;
+  if (row.source === "seed") throw new Error("SEED_PROTECTED");
+  const info = database.prepare("DELETE FROM dataset_images WHERE id = ?").run(Number(id));
+  return Number(info.changes) > 0;
 }

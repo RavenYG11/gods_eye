@@ -2,7 +2,7 @@
 // DI BAWAH card "Deteksi kendaraan".
 //
 // Keputusan Rama (final): gambar disimpan di DATABASE SQLite backend
-// (better-sqlite3), BUKAN file. Panel ini memakai SATU-SATUNYA modul
+// (node:sqlite bawaan Node, #73), BUKAN file. Panel ini memakai SATU-SATUNYA modul
 // frontend: ../lib/dataset.ts (GET metadata, GET /:id/image → objectURL,
 // POST, DELETE). Seed (source 'seed') tampil tapi TIDAK bisa dihapus
 // (backend menolak dengan 403).

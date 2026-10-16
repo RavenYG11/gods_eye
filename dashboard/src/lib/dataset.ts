@@ -1,7 +1,7 @@
 // #72 (16 Okt 2026, FINAL) — Klien API "Kelola Dataset" (DATABASE).
 //
 // Keputusan Rama (final): gambar dataset disimpan di SQLite backend
-// (better-sqlite3), BUKAN file. Modul ini SATU-SATUNYA jalur frontend
+// (node:sqlite bawaan Node, #73), BUKAN file. Modul ini SATU-SATUNYA jalur frontend
 // untuk baca/tulis dataset:
 //
 //   GET    /api/dataset            → metadata (TANPA blob)
