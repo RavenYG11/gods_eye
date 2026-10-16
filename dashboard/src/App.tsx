@@ -2,18 +2,22 @@
 // Layout (atas → bawah), rujukan docs/mockup-dashboard.html VARIAN 1
 // (pilihan Rama) + panel "Log koneksi" di BAWAH video player:
 //   1. Header minimal — wordmark + jam WIB + chip "localhost"
-//   2. Player 16:9 (StreamPlayer)
-//   3. Log koneksi — full-width horizontal, event nyata hls.js
+//   2. Stage: Player 16:9 (StreamPlayer) + card "Deteksi kendaraan" (#71)
+//      di kanan (menumpuk di layar sempit)
+//   3. Log koneksi — full-width horizontal, event nyata hls.js + ringkasan
+//      delay dari live edge (#71)
 //   4. Bar info kamera — CameraSelector (disabled, 1 item)
-// Pagar §5: tanpa panel deteksi, tanpa tombol record, tanpa face recognition.
+// Pagar §5: tanpa tombol record, tanpa face recognition.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CAMERAS } from "./config/cameras";
 import { formatJamWIB } from "./lib/log";
 import { useStreamSession } from "./lib/useStreamSession";
+import { useDetection } from "./lib/useDetection";
 import { downloadTelemetryJson } from "./lib/telemetry";
 import { CameraSelector } from "./components/CameraSelector";
 import { ConnectionLog } from "./components/ConnectionLog";
+import { DetectionPanel } from "./components/DetectionPanel";
 import { StreamPlayer } from "./components/StreamPlayer";
 import "./styles.css";
 
@@ -50,6 +54,16 @@ function formatTanggalWIB(epochMs: number): string {
 export default function App() {
   const camera = CAMERAS[0]; // v0.1 dikunci 1 kamera
   const session = useStreamSession(camera);
+  // #71: hook deteksi diangkat ke App — dipakai StreamPlayer (overlay box)
+  // + DetectionPanel (indikator/slider/toggle di card kanan). Video element
+  // diteruskan StreamPlayer via videoSinkRef.
+  // #69: paused dari event nyata <video> — loop inferensi berhenti saat
+  // video dijeda (frame sama berulang = buang CPU).
+  const videoSinkRef = useRef<HTMLVideoElement | null>(null);
+  const detection = useDetection(
+    () => videoSinkRef.current,
+    session.snap.paused,
+  );
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -77,10 +91,23 @@ export default function App() {
       </header>
 
       <main>
-        <StreamPlayer session={session} camera={camera} />
+        {/* #71: video + card deteksi berdampingan (responsif: menumpuk di
+            layar sempit). Card video bersih: hanya video + DVR bar +
+            kontrol play. */}
+        <div className="stage">
+          <StreamPlayer
+            session={session}
+            camera={camera}
+            detection={detection}
+            videoSinkRef={videoSinkRef}
+          />
+          <DetectionPanel detection={detection} />
+        </div>
 
         <ConnectionLog
           entries={session.snap.log}
+          delaySec={session.snap.delaySec}
+          status={session.snap.status}
           onDownloadLog={() =>
             downloadTelemetryJson(session.getTelemetry(), camera.id)
           }
@@ -96,8 +123,8 @@ export default function App() {
         </section>
 
         <footer>
-          GODS EYE v0.1 — viewer 1 kamera CCTV Kota Bekasi · frontend-only,
-          tanpa backend
+          GODS EYE v0.1 — viewer 1 kamera CCTV Kota Bekasi · fullstack:
+          backend Node.js (reverse proxy + static) + frontend React
           <br />
           Acuan: <span className="mono">docs/arsitektur.md</span> (Sentot, #49)
           · visual: <span className="mono">docs/mockup-dashboard.html</span>{" "}

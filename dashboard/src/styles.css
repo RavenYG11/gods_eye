@@ -107,11 +107,8 @@ main{flex:1;width:100%;max-width:1440px;margin:0 auto;padding:20px 16px 40px;
        color:var(--text);font-size:16px;display:flex;align-items:center;justify-content:center}
 #fsBtn:hover{background:rgba(20,26,40,.85)}
 
-/* strip info delay (non-blocking) */
-#delayStrip{position:absolute;left:0;right:0;bottom:0;z-index:5;display:none;
-            font-size:12px;color:#fde68a;background:rgba(120,72,10,.55);
-            backdrop-filter:blur(4px);padding:8px 14px;border-top:1px solid rgba(251,191,36,.35)}
-#delayStrip.show{display:block}
+/* #71: strip delay kuning DIHAPUS (permintaan Rama) — info delay pindah
+   ke panel Log koneksi (.log-delay). */
 
 /* overlay state (tengah video) */
 .overlay{position:absolute;inset:0;z-index:4;display:none;flex-direction:column;
@@ -229,16 +226,13 @@ footer .mono{font-family:var(--mono)}
 .det-overlay{position:absolute;inset:0;width:100%;height:100%;z-index:2;
              pointer-events:none}
 
-/* tombol toggle deteksi — di kiri tombol fullscreen */
-#detBtn{position:absolute;bottom:12px;right:56px;z-index:6;width:36px;height:36px;
-        border-radius:8px;border:1px solid var(--line);background:rgba(5,8,14,.65);
-        color:var(--faint);font-size:16px;display:flex;align-items:center;justify-content:center}
-#detBtn:hover{background:rgba(20,26,40,.85);color:var(--text)}
-#detBtn.on{color:var(--green);border-color:rgba(74,222,128,.45)}
+/* #71: tombol toggle deteksi PINDAH ke card kanan (DetectionPanel) —
+   CSS #detBtn dihapus. */
 
-/* #69: tombol putar/jeda — di kiri tombol deteksi. Saat dijeda, ikon ▶
-   diberi aksen hijau agar statusnya terbaca sekilas. */
-#playBtn{position:absolute;bottom:12px;right:100px;z-index:6;width:36px;height:36px;
+/* #69: tombol putar/jeda. #71: digeser ke right:56px (slot bekas tombol
+   deteksi) agar sejajar tombol fullscreen. Saat dijeda, ikon ▶ diberi
+   aksen hijau agar statusnya terbaca sekilas. */
+#playBtn{position:absolute;bottom:12px;right:56px;z-index:6;width:36px;height:36px;
         border-radius:8px;border:1px solid var(--line);background:rgba(5,8,14,.65);
         color:var(--text);font-size:14px;display:flex;align-items:center;justify-content:center}
 #playBtn:hover{background:rgba(20,26,40,.85)}
@@ -254,11 +248,13 @@ footer .mono{font-family:var(--mono)}
 .play-time.live{color:var(--green);border-color:rgba(74,222,128,.35)}
 .play-time.behind{color:var(--text)}
 
-/* #70.1: bar DVR kini INTERAKTIF (scrub klik/drag/arrow keys) — kebijakan
-   display-only #69 dibatalkan. pointer-events:auto + cursor pointer +
+/* #70.1: bar DVR INTERAKTIF (scrub klik/drag/arrow keys).
+   #71: DIPERPANJANG — hampir mentok ke kanan player (lebar penuh area
+   video; bar di bottom:62px, barisan tombol di bottom:12px, jadi ruang
+   kontrol play tetap aman). pointer-events:auto + cursor pointer +
    area sentuh diperlebar via padding. Bar = jendela DVR
    [windowStart..liveEdge]; penanda putih = posisi play. */
-.dvr-bar{position:absolute;left:12px;width:280px;bottom:62px;z-index:5;
+.dvr-bar{position:absolute;left:12px;right:12px;bottom:62px;z-index:5;
          cursor:pointer;touch-action:none;padding:10px 0;border-radius:4px}
 .dvr-bar:focus-visible{outline:2px solid var(--sky, #38bdf8);outline-offset:2px}
 .dvr-track{position:relative;height:4px;border-radius:2px;
@@ -272,23 +268,49 @@ footer .mono{font-family:var(--mono)}
           font-family:var(--mono);color:var(--muted);pointer-events:none;
           white-space:nowrap}
 
-/* chip status deteksi — pojok kanan bawah, di atas strip delay */
-.det-chip{position:absolute;bottom:56px;right:12px;z-index:6;font-size:11px;
-          font-family:var(--mono);color:var(--text);background:rgba(5,8,14,.72);
-          border:1px solid var(--line);border-radius:6px;padding:5px 9px;
-          backdrop-filter:blur(4px);pointer-events:none;max-width:70%}
-.det-chip.ok{color:var(--green);border-color:rgba(74,222,128,.35)}
-.det-chip.error{color:var(--red);border-color:rgba(248,113,113,.45);
-               pointer-events:auto;cursor:pointer;font-family:inherit}
+/* #71: chip status deteksi & slider confidence PINDAH ke card kanan
+   (DetectionPanel, .det-panel) — CSS .det-chip/.det-threshold dihapus. */
 
-/* #62: slider ambang confidence — pojok kanan bawah, di atas chip status.
-   Live: berlaku mulai frame berikutnya, tanpa reload model/worker. */
-.det-threshold{position:absolute;bottom:96px;right:12px;z-index:6;
-               display:flex;align-items:center;gap:8px;font-size:11px;
-               font-family:var(--mono);color:var(--text);
-               background:rgba(5,8,14,.72);border:1px solid var(--line);
-               border-radius:6px;padding:6px 10px;backdrop-filter:blur(4px)}
-.det-threshold label{white-space:nowrap;color:var(--muted)}
-.det-threshold output{color:var(--green);font-weight:700;min-width:2.5em}
-.det-threshold input[type="range"]{width:110px;accent-color:var(--green);
-                                   cursor:pointer}
+/* === #71: stage — video + card deteksi berdampingan === */
+.stage{display:flex;gap:16px;align-items:flex-start;justify-content:center}
+.stage .player{margin:0}
+/* Card "Deteksi kendaraan" — di kanan video; turun ke bawah di layar sempit. */
+.det-panel{flex:0 0 300px;background:var(--panel);border:1px solid var(--line);
+           border-radius:var(--radius);padding:14px 16px;
+           display:flex;flex-direction:column;gap:12px}
+.dp-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.dp-head h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+            font-weight:700;display:flex;align-items:center;gap:8px}
+.dp-dot{width:8px;height:8px;border-radius:50%;background:var(--gray);flex:none}
+.dp-dot.dp-on{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dp-dot.dp-err{background:var(--red);box-shadow:0 0 8px var(--red)}
+.dp-dot.dp-off{background:var(--gray)}
+.dp-status{font-size:11px;font-weight:700;letter-spacing:.04em}
+.dp-status.dp-on{color:var(--green)}
+.dp-status.dp-err{color:var(--red)}
+.dp-status.dp-off{color:var(--muted)}
+.dp-indicator{font-family:var(--mono);font-size:11.5px;color:var(--green);
+              line-height:1.7;word-break:break-word}
+.dp-note{font-size:12px;color:var(--muted);line-height:1.55}
+.dp-error p{font-size:12px;color:var(--red);margin-bottom:8px;line-height:1.5}
+.dp-threshold{display:flex;align-items:center;gap:8px;font-size:11px;
+              font-family:var(--mono);color:var(--text)}
+.dp-threshold label{white-space:nowrap;color:var(--muted)}
+.dp-threshold output{color:var(--green);font-weight:700;min-width:2.5em}
+.dp-threshold input[type="range"]{flex:1;accent-color:var(--green);cursor:pointer}
+.dp-threshold input[type="range"]:disabled{opacity:.35;cursor:not-allowed}
+.dp-toggle.is-on{color:var(--green);border-color:rgba(74,222,128,.45)}
+.dp-hint{font-size:11px;color:var(--faint);line-height:1.5}
+.dp-hint .mono{font-family:var(--mono)}
+
+/* #71: ringkasan delay di panel Log koneksi — pindahan strip kuning. */
+.log-delay{margin:10px 0 0;font-size:12px;color:var(--muted);line-height:1.55;
+          background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.25);
+          border-radius:8px;padding:8px 12px}
+.log-delay strong{color:var(--yellow)}
+
+@media (max-width:1100px){
+  /* #71: layar sempit — card deteksi turun ke bawah video. */
+  .stage{flex-direction:column;align-items:center}
+  .det-panel{flex:none;width:min(100%, calc((100lvh - 140px) * 16 / 9))}
+}
