@@ -59,9 +59,12 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
   const scrubbingRef = useRef(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [clock, setClock] = useState(() => formatJamWIB(Date.now()));
-  // #71: patokan lifetime tab — denominator angka durasi ("posisi / total").
-  // Di-set sekali saat mount; reset hanya bila tab di-close/restart.
-  const bootRef = useRef(Date.now());
+  /**
+   * #74: rasio target SAAT drag (0..1) — feedback visual langsung 60fps
+   * selama scrub (thumb + angka mengikuti jari/kursor), tanpa menunggu
+   * tick engine 1 dtk. null = tidak sedang scrub → pakai barPct engine.
+   */
+  const [scrubRatio, setScrubRatio] = useState<number | null>(null);
 
   // Ref callback STABIL (useCallback): inline arrow di prop `ref` dibuat
   // ulang tiap render → React detach/attach ulang → engine.attach() tiap
@@ -166,24 +169,43 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
     [playback, seekTo],
   );
 
-  const barSeekFromPointer = (clientX: number) => {
+  const barSeekFromPointer = (clientX: number): number | null => {
     const el = barRef.current;
-    if (!el) return;
+    if (!el) return null;
     const rect = el.getBoundingClientRect();
-    if (rect.width <= 0) return;
-    seekRatio((clientX - rect.left) / rect.width);
+    if (rect.width <= 0) return null;
+    const r = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    seekRatio(r);
+    return r;
   };
 
+  const endScrub = useCallback(() => {
+    scrubbingRef.current = false;
+    setScrubRatio(null);
+  }, []);
+
   const onBarPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.getAttribute("aria-disabled") === "true") return;
     scrubbingRef.current = true;
-    barRef.current?.setPointerCapture(e.pointerId);
-    barSeekFromPointer(e.clientX);
+    // #74: setPointerCapture bisa melempar (pointerId asing) — jangan
+    // biarkan drag mati karenanya; tanpa capture, move/up tetap jalan
+    // selama kursor di atas bar.
+    try {
+      barRef.current?.setPointerCapture(e.pointerId);
+    } catch {
+      /* abaikan — drag tetap berfungsi tanpa capture */
+    }
+    const r = barSeekFromPointer(e.clientX);
+    setScrubRatio(r);
   };
   const onBarPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (scrubbingRef.current) barSeekFromPointer(e.clientX);
+    if (!scrubbingRef.current) return;
+    // Hover tanpa drag (mouse): jangan seek — hanya saat scrubbing.
+    const r = barSeekFromPointer(e.clientX);
+    setScrubRatio(r);
   };
   const onBarPointerUp = () => {
-    scrubbingRef.current = false;
+    endScrub();
   };
   const onBarKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const { windowStart, edge, pos } = playback;
@@ -230,40 +252,71 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
   // Kebijakan display-only #69 DIBATALKAN atas permintaan Rama.
   // Bar menunjukkan posisi play dalam [windowStart, liveEdge]; engine
   // menjepit target seek ke dalam jendela + memberi masa tenggang guard.
-  const barPct =
-    playback.windowStart >= 0 && playback.edge > playback.windowStart
-      ? Math.min(
-          100,
-          Math.max(
-            0,
-            ((playback.pos - playback.windowStart) /
-              (playback.edge - playback.windowStart)) *
-              100,
+  // #74: info jendela valid? Bila belum (stream baru dimuat), bar masuk
+  // mode disabled yang JUJUR (redup, tidak bisa di-slide) — bukan diam
+  // misterius seperti sebelum #74.
+  const dvrReady =
+    playback.windowStart >= 0 && playback.edge > playback.windowStart;
+  const barPct = dvrReady
+    ? Math.min(
+        100,
+        Math.max(
+          0,
+          ((playback.pos - playback.windowStart) /
+            (playback.edge - playback.windowStart)) *
+            100,
+        ),
+      )
+    : 0;
+  // #74: selama scrub, thumb & angka mengikuti rasio drag (feedback 60fps),
+  // bukan menunggu tick engine 1 dtk.
+  const shownPct = scrubRatio !== null ? scrubRatio * 100 : barPct;
+  // #74: rentang BUFFER dalam jendela (ala video player: area terang =
+  // sudah termuat) — dari bufStart/bufEnd engine.
+  const bufPct =
+    dvrReady && playback.bufStart >= 0 && playback.bufEnd >= playback.bufStart
+      ? {
+          left: Math.min(
+            100,
+            Math.max(
+              0,
+              ((playback.bufStart - playback.windowStart) /
+                (playback.edge - playback.windowStart)) *
+                100,
+            ),
           ),
-        )
-      : 0;
+          width: Math.min(
+            100,
+            Math.max(
+              0,
+              ((playback.bufEnd - playback.bufStart) /
+                (playback.edge - playback.windowStart)) *
+                100,
+            ),
+          ),
+        }
+      : null;
   const gapSec =
     playback.bufEnd >= 0 ? Math.max(0, playback.bufEnd - playback.pos) : -1;
-  const pbTitle =
-    playback.edge < 0
-      ? "Info jendela DVR belum tersedia"
-      : `Posisi ${playback.pos.toFixed(1)} dtk · jendela DVR ` +
-        `${playback.windowStart.toFixed(0)}–${playback.edge.toFixed(0)} dtk` +
-        (gapSec >= 0 ? ` · buffer ${gapSec.toFixed(1)} dtk di depan` : "") +
-        " · klik/drag/←→ untuk maju-mundur (#70)";
+  const pbTitle = !dvrReady
+    ? "Menunggu info jendela DVR dari stream…"
+    : `Posisi ${playback.pos.toFixed(1)} dtk · jendela DVR ` +
+      `${playback.windowStart.toFixed(0)}–${playback.edge.toFixed(0)} dtk` +
+      (gapSec >= 0 ? ` · buffer ${gapSec.toFixed(1)} dtk di depan` : "") +
+      " · klik/drag/←→ untuk maju-mundur (#70)";
 
-  // #71 — ANGKA DURASI "posisi / total": denominator = LIFETIME sejak
-  // tab/web dibuka (reset hanya saat tab di-close/restart), BUKAN panjang
-  // jendela DVR. Posisi = posisi playback dalam jendela DVR (tak berubah).
-  // Contoh: "00:46 / 12:03".
-  const lifetimeSec = Math.max(
-    0,
-    Math.floor((Date.now() - bootRef.current) / 1000),
-  );
-  const dvrTimeText =
-    playback.windowStart >= 0 && playback.edge > playback.windowStart
-      ? `${formatDvrClock(playback.pos - playback.windowStart)} / ${formatDvrClock(lifetimeSec)}`
-      : "–";
+  // #74 — ANGKA DURASI "posisi / total" ALA VIDEO PLAYER: posisi = detik
+  // dalam jendela DVR, total = PANJANG jendela DVR (mm:ss). Menggantikan
+  // denominator "lifetime tab" (#71) yang membingungkan — untuk live HLS
+  // tidak ada durasi klasik; yang bermakna adalah rentang yang bisa
+  // di-scrub. Contoh: "00:17 / 01:02".
+  const windowLenSec = dvrReady ? playback.edge - playback.windowStart : 0;
+  const shownPosSec = dvrReady
+    ? (shownPct / 100) * windowLenSec
+    : 0;
+  const dvrTimeText = dvrReady
+    ? `${formatDvrClock(shownPosSec)} / ${formatDvrClock(windowLenSec)}`
+    : "menunggu info DVR…";
 
   const bitrateText =
     metrics.bitrateMbps !== null ? `${metrics.bitrateMbps} Mbps` : "–";
@@ -450,30 +503,44 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
           + aria agar terbaca screen reader & bisa keyboard.
           #71: tooltip (title) DIHAPUS TOTAL atas permintaan Rama
           ("−24 dtk dari live" saat hover). aria-valuetext dipertahankan
-          untuk screen reader (bukan tooltip visual). */}
+          untuk screen reader (bukan tooltip visual).
+          #74: ala video player — thumb BESAR terlihat, rentang buffer,
+          hit-area ≥12px, hover membesar, mode disabled jujur saat info
+          jendela belum ada. Selama scrub, thumb & angka mengikuti drag
+          (scrubRatio), bukan tick engine 1 dtk. */}
       <div
         ref={barRef}
-        className="dvr-bar"
+        className={`dvr-bar${dvrReady ? "" : " is-disabled"}${scrubRatio !== null ? " is-scrubbing" : ""}`}
         role="slider"
         tabIndex={0}
         aria-label="Posisi dalam jendela DVR — klik, drag, atau tombol panah untuk maju-mundur"
+        aria-disabled={!dvrReady}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(barPct)}
+        aria-valuenow={Math.round(shownPct)}
         aria-valuetext={pbTitle}
         onPointerDown={onBarPointerDown}
         onPointerMove={onBarPointerMove}
         onPointerUp={onBarPointerUp}
         onPointerCancel={onBarPointerUp}
+        onLostPointerCapture={onBarPointerUp}
         onKeyDown={onBarKeyDown}
       >
         <div className="dvr-track">
-          <div className="dvr-pos" style={{ left: `${barPct}%` }} />
+          {bufPct && (
+            <div
+              className="dvr-buffered"
+              style={{ left: `${bufPct.left}%`, width: `${bufPct.width}%` }}
+              aria-hidden="true"
+            />
+          )}
+          <div className="dvr-pos" style={{ left: `${shownPct}%` }} />
         </div>
       </div>
       {/* #70 (tambahan Rama 21:24): angka durasi TEPAT di bawah bar.
-          #71: format "posisi / total" — total = lifetime tab (bukan panjang
-          jendela DVR). Tooltip (title) DIHAPUS TOTAL (permintaan Rama). */}
+          #74: format "posisi / total" = detik-dalam-jendela / panjang-jendela
+          (mm:ss) — denominator lifetime-tab #71 diganti karena membingungkan.
+          Tooltip (title) DIHAPUS TOTAL (permintaan Rama). */}
       <div className="dvr-time" aria-hidden="true">
         {dvrTimeText}
       </div>

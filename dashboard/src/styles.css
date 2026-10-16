@@ -251,22 +251,40 @@ footer .mono{font-family:var(--mono)}
 /* #70.1: bar DVR INTERAKTIF (scrub klik/drag/arrow keys).
    #71: DIPERPANJANG — hampir mentok ke kanan player (lebar penuh area
    video; bar di bottom:62px, barisan tombol di bottom:12px, jadi ruang
-   kontrol play tetap aman). pointer-events:auto + cursor pointer +
-   area sentuh diperlebar via padding. Bar = jendela DVR
-   [windowStart..liveEdge]; penanda putih = posisi play. */
+   kontrol play tetap aman).
+   #74: BENAR-BENAR ala video player (keluhan Rama "gabisa di-slide"):
+   - hit-area ≥12px (padding 14px vertikal → ±34px total, pointer-events
+     eksplisit auto agar tak tertutup overlay);
+   - thumb 14px TERLIHAT + membesar saat hover/scrub (affordance jelas);
+   - rentang buffer (.dvr-buffered) ala YouTube: area terang = termuat;
+   - mode .is-disabled JUJUR saat info jendela belum ada (redup, cursor
+     default) — bukan diam misterius. */
 .dvr-bar{position:absolute;left:12px;right:12px;bottom:62px;z-index:5;
-         cursor:pointer;touch-action:none;padding:10px 0;border-radius:4px}
+         cursor:pointer;touch-action:none;padding:14px 0;border-radius:6px;
+         pointer-events:auto}
+.dvr-bar:hover .dvr-track{background:rgba(56,189,248,.45)}
 .dvr-bar:focus-visible{outline:2px solid var(--sky, #38bdf8);outline-offset:2px}
-.dvr-track{position:relative;height:4px;border-radius:2px;
-           background:rgba(56,189,248,.25)}
-.dvr-pos{position:absolute;top:50%;width:8px;height:8px;border-radius:50%;
-         background:#fff;transform:translate(-50%,-50%);
-         box-shadow:0 0 6px rgba(255,255,255,.6)}
+.dvr-bar.is-disabled{cursor:default;opacity:.45}
+.dvr-bar.is-disabled:hover .dvr-track{background:rgba(56,189,248,.25)}
+.dvr-track{position:relative;height:6px;border-radius:3px;
+           background:rgba(56,189,248,.25);transition:background .15s}
+.dvr-buffered{position:absolute;top:0;bottom:0;border-radius:3px;
+             background:rgba(229,231,235,.35);pointer-events:none}
+.dvr-pos{position:absolute;top:50%;width:14px;height:14px;border-radius:50%;
+         background:#fff;transform:translate(-50%,-50%) scale(1);
+         box-shadow:0 0 8px rgba(255,255,255,.7);pointer-events:none;
+         transition:transform .12s}
+.dvr-bar:hover .dvr-pos{transform:translate(-50%,-50%) scale(1.25)}
+.dvr-bar.is-scrubbing .dvr-pos{transform:translate(-50%,-50%) scale(1.4);
+         box-shadow:0 0 12px rgba(56,189,248,.9)}
 /* #70 (tambahan Rama 21:24): angka durasi TEPAT di bawah bar —
-   "posisi / panjang jendela" (mm:ss). Monospace 10px, tak mengganggu. */
-.dvr-time{position:absolute;left:12px;bottom:42px;z-index:5;font-size:10px;
-          font-family:var(--mono);color:var(--muted);pointer-events:none;
-          white-space:nowrap}
+   #74: "posisi / panjang-jendela" (mm:ss), 12px monospace dalam chip agar
+   JELAS terbaca (sebelumnya 10px abu-abu — keluhan "ga ada angka durasi"). */
+.dvr-time{position:absolute;left:12px;bottom:40px;z-index:5;font-size:12px;
+          font-family:var(--mono);font-weight:600;color:var(--text);
+          background:rgba(5,8,14,.72);border:1px solid var(--line);
+          border-radius:6px;padding:4px 10px;pointer-events:none;
+          white-space:nowrap;backdrop-filter:blur(4px)}
 
 /* #71: chip status deteksi & slider confidence PINDAH ke card kanan
    (DetectionPanel, .det-panel) — CSS .det-chip/.det-threshold dihapus. */
@@ -342,17 +360,40 @@ footer .mono{font-family:var(--mono)}
 .ds-msg-ok{color:var(--green);background:rgba(74,222,128,.07);border:1px solid rgba(74,222,128,.25)}
 .ds-msg-err{color:var(--red);background:rgba(248,113,113,.07);border:1px solid rgba(248,113,113,.25)}
 .ds-note{font-size:12px;color:var(--muted);line-height:1.55}
-.ds-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-height:280px;overflow-y:auto}
-.ds-thumb{position:relative;margin:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;
-          aspect-ratio:4/3;background:rgba(255,255,255,.03)}
-.ds-thumb img{width:100%;height:100%;object-fit:cover;display:block}
-.ds-broken{display:flex;align-items:center;justify-content:center;height:100%;padding:6px;
-           font-family:var(--mono);font-size:9px;color:var(--faint);word-break:break-all;text-align:center}
-.ds-badge{position:absolute;left:4px;bottom:4px;font-size:10px;font-weight:700;
-          background:rgba(0,0,0,.65);color:var(--green);border-radius:5px;padding:2px 6px}
-.ds-badge.seed{color:var(--yellow)}
-.ds-del{position:absolute;top:2px;right:2px;width:22px;height:22px;border-radius:50%;border:none;
-        background:rgba(0,0,0,.65);color:#fff;font-size:15px;line-height:1;cursor:pointer}
-.ds-del:hover{background:var(--red)}
+/* #74: TOAST — melayang singkat di dalam card (auto-hilang 4 dtk via JS),
+   menggantikan pesan inline untuk hasil upload/paste/hapus. */
+.ds-toast{font-size:12px;line-height:1.5;border-radius:8px;padding:8px 12px;
+         animation:dsToastIn .18s ease-out}
+.ds-toast-ok{color:var(--green);background:rgba(74,222,128,.09);
+            border:1px solid rgba(74,222,128,.3)}
+.ds-toast-err{color:var(--red);background:rgba(248,113,113,.09);
+             border:1px solid rgba(248,113,113,.3)}
+@keyframes dsToastIn{from{opacity:0;transform:translateY(-4px)}
+                     to{opacity:1;transform:translateY(0)}}
+/* #74: daftar sampel COLLAPSIBLE (default tertutup) — baris kompak TANPA
+   thumbnail. Grid thumbnail .ds-grid DIHAPUS (keluhan Rama). */
+.ds-list{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02)}
+.ds-list summary{font-size:12px;font-weight:700;color:var(--text);cursor:pointer;
+                padding:9px 12px;list-style:none;display:flex;align-items:center;
+                justify-content:space-between;gap:8px}
+.ds-list summary::-webkit-details-marker{display:none}
+.ds-list summary::before{content:"▸";color:var(--muted);font-size:10px}
+.ds-list[open] summary::before{content:"▾"}
+.ds-list summary:hover{color:#fff}
+.ds-list-hint{font-size:10px;font-weight:400;color:var(--faint)}
+.ds-list ul{list-style:none;border-top:1px solid var(--line);
+           max-height:220px;overflow-y:auto}
+.ds-row{display:flex;align-items:center;gap:8px;padding:7px 12px;font-size:11.5px;
+       border-bottom:1px solid rgba(35,42,59,.5)}
+.ds-row:last-child{border-bottom:none}
+.ds-row-id{font-family:var(--mono);color:var(--faint);flex:none;min-width:2.5em}
+.ds-row-label{font-weight:700;color:var(--green);flex:none}
+.ds-row-label.seed{color:var(--yellow)}
+.ds-row-meta{font-family:var(--mono);font-size:10.5px;color:var(--muted);
+            flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ds-row-del{font-size:11px;font-weight:600;color:var(--muted);background:transparent;
+           border:1px solid var(--line);border-radius:6px;padding:3px 9px;flex:none}
+.ds-row-del:hover{color:#fff;border-color:var(--red);background:rgba(248,113,113,.12)}
+.ds-last{color:var(--muted);font-size:11px}
 .ds-hint{font-size:11px;color:var(--faint);line-height:1.5}
 .ds-hint .mono{font-family:var(--mono)}
