@@ -22,6 +22,13 @@ export interface StreamSession {
    * agar posisi play masih valid (tidak menabrak posisi kedaluwarsa).
    */
   guardDvrWindow: () => boolean;
+  /** #70.1: seek manual user ke posisi detik dalam jendela DVR (scrub). */
+  seekTo: (targetSec: number) => boolean;
+  /**
+   * #70.3: resume tahan banting — guard DVR + clamp jendela + startLoad +
+   * watchdog pemulihan. Pengganti pola guardDvrWindow()+play() (#69).
+   */
+  resumePlayback: () => void;
 }
 
 const INITIAL: StreamSnapshot = {
@@ -86,5 +93,22 @@ export function useStreamSession(camera: CameraConfig): StreamSession {
     () => () => engineRef.current?.guardDvrWindow() ?? false,
   );
 
-  return { snap, attachVideo, retry, getTelemetry, guardDvrWindow };
+  // #70.1 / #70.3: stabil — engine tidak berubah selama sesi v0.1.
+  const [seekTo] = useState(
+    () => (targetSec: number) =>
+      engineRef.current?.seekTo(targetSec) ?? false,
+  );
+  const [resumePlayback] = useState(
+    () => () => engineRef.current?.resumePlayback(),
+  );
+
+  return {
+    snap,
+    attachVideo,
+    retry,
+    getTelemetry,
+    guardDvrWindow,
+    seekTo,
+    resumePlayback,
+  };
 }

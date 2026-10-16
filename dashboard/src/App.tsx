@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { CAMERAS } from "./config/cameras";
 import { formatJamWIB } from "./lib/log";
 import { useStreamSession } from "./lib/useStreamSession";
+import { downloadTelemetryJson } from "./lib/telemetry";
 import { CameraSelector } from "./components/CameraSelector";
 import { ConnectionLog } from "./components/ConnectionLog";
 import { StreamPlayer } from "./components/StreamPlayer";
@@ -78,7 +79,12 @@ export default function App() {
       <main>
         <StreamPlayer session={session} camera={camera} />
 
-        <ConnectionLog entries={session.snap.log} />
+        <ConnectionLog
+          entries={session.snap.log}
+          onDownloadLog={() =>
+            downloadTelemetryJson(session.getTelemetry(), camera.id)
+          }
+        />
 
         <section className="cam-bar" aria-label="Informasi kamera">
           <CameraSelector />

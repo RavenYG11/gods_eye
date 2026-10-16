@@ -23,9 +23,15 @@ const LEVEL_LABEL: Record<LogLevel, string> = {
 
 interface Props {
   entries: LogEntry[];
+  /**
+   * #70.4: unduh log playback (telemetri #68) — tombol di header panel,
+   * di samping "Bersihkan". Sebelumnya tombol hanya ada di dalam popover
+   * metrik (di balik klik badge) sehingga Rama tidak menemukannya.
+   */
+  onDownloadLog?: () => void;
 }
 
-export function ConnectionLog({ entries }: Props) {
+export function ConnectionLog({ entries, onDownloadLog }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
   // "Bersihkan" hanya menyembunyikan tampilan; engine tetap mencatat.
@@ -71,6 +77,16 @@ export function ConnectionLog({ entries }: Props) {
           >
             Bersihkan
           </button>
+          {onDownloadLog && (
+            <button
+              type="button"
+              className="log-dl"
+              onClick={onDownloadLog}
+              title="Unduh log playback (JSON): posisi play vs ujung buffer vs live edge tiap 2 dtk — bukti uji anti-buffering 10+ menit"
+            >
+              Unduh log playback
+            </button>
+          )}
         </div>
       </div>
       <div
