@@ -7,3 +7,5 @@ dashboard/node_modules/.tmp/
 *.bin
 *.pkl
 .DS_Store
+# #72: database SQLite dataset (dibuat otomatis saat backend jalan — JANGAN di-commit)
+backend/data/

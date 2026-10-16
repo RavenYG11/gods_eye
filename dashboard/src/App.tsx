@@ -17,6 +17,7 @@ import { useDetection } from "./lib/useDetection";
 import { downloadTelemetryJson } from "./lib/telemetry";
 import { CameraSelector } from "./components/CameraSelector";
 import { ConnectionLog } from "./components/ConnectionLog";
+import { DatasetPanel } from "./components/DatasetPanel";
 import { DetectionPanel } from "./components/DetectionPanel";
 import { StreamPlayer } from "./components/StreamPlayer";
 import "./styles.css";
@@ -101,7 +102,12 @@ export default function App() {
             detection={detection}
             videoSinkRef={videoSinkRef}
           />
-          <DetectionPanel detection={detection} />
+          {/* #72: kolom kanan = card "Deteksi kendaraan" + card
+              "Kelola Dataset" (menumpuk vertikal). */}
+          <div className="side-col">
+            <DetectionPanel detection={detection} />
+            <DatasetPanel />
+          </div>
         </div>
 
         <ConnectionLog
