@@ -351,7 +351,11 @@ export class StreamHealth {
     let hi = Number.POSITIVE_INFINITY;
     const frags = hls?.levels?.[hls.currentLevel]?.details?.fragments;
     if (frags && frags.length > 0) {
-      lo = frags[0].start + 1;
+      // #74: lo = windowStart+2 (was +1) — margin kecil agar posisi hasil
+      // seek tidak "lahir" tepat di bibir kedaluwarsa; guard DVR tidak
+      // menyentuh posisi ini selama 30 dtk masa tenggang (lihat
+      // dvrWindowGuard) → posisi tidak mental balik.
+      lo = frags[0].start + 2;
       const last = frags[frags.length - 1];
       hi = last.start + (last.duration || 0) - 0.5;
     }
@@ -856,12 +860,14 @@ export class StreamHealth {
 
     const windowStart = frags[0].start;
     const pos = video.currentTime;
-    // #70.1: masa tenggang setelah scrub manual — jangan langsung menarik
-    // maju posisi yang baru dipilih user; guard hanya bila BENAR-BENAR
-    // hampir kedaluwarsa (margin 2 dtk).
-    const scrubGrace =
-      Date.now() - this.lastManualSeekAt < this.SCRUB_GRACE_MS;
-    const margin = scrubGrace ? 2 : DVR_GUARD_MARGIN_SEC;
+    // #74: masa tenggang setelah scrub manual — JANGAN SENTUH SAMA SEKALI
+    // posisi yang baru dipilih user. SEBELUM #74: margin 2 dtk + clamp seek
+    // lo=windowStart+1 → seek ke tepi kiri bar SELALU ditarik balik ke
+    // edge−45 oleh guard ini ("posisi mental balik" — keluhan Rama #74).
+    // Guard kembali normal setelah 30 dtk; saat itu jendela sudah bergeser
+    // dan konten di posisi lama memang kedaluwarsa (benar untuk ditarik).
+    if (Date.now() - this.lastManualSeekAt < this.SCRUB_GRACE_MS) return false;
+    const margin = DVR_GUARD_MARGIN_SEC;
     // Masih aman: lebih dari margin di dalam jendela → tidak usah apa-apa.
     if (pos > windowStart + margin) return false;
 

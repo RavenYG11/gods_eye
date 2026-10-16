@@ -73,21 +73,25 @@ npm install
 
 ### 4a. Fullstack — DIREKOMENDASIKAN (satu origin, bebas CORS permanen)
 
+Ritual baku sejak #74 (16 Okt 2026) — dari ROOT repo:
+
 ```bash
-cd dashboard
-npm install
-scripts\unduh-model.bat   # ★ #60 — Windows, SEKALI saja → public/models/yolo26n.onnx
-                          # (Linux/Mac: bash scripts/unduh-model.sh)
-npm run build        # sekali per ada perubahan frontend → dashboard/dist/
-cd ../backend
-npm start            # → http://localhost:3000
+git pull
+npm run setup    # dashboard: npm install + build · backend: npm install
+npm start        # → http://localhost:3000
 ```
+
+Sekali saja (pertama kali / bila model hilang): unduh bobot deteksi
+`scripts\unduh-model.bat` (Windows) atau `bash dashboard/scripts/unduh-model.sh`
+(Linux/Mac) → `dashboard/public/models/yolo26n.onnx`, lalu ulangi `npm run setup`.
+`npm run setup` otomatis mengingatkan (`scripts/check-model.mjs`) bila model
+belum ada. Aman di bash Windows (Rama): hanya memakai `npm --prefix`.
 
 Buka **http://localhost:3000**. Backend melayani app + proksi stream dari satu
 origin → browser tidak kena CORS di environment apa pun.
 
 > **Model deteksi (#60):** file `yolo26n.onnx` (~10 MB) TIDAK ikut repo
-> (`.gitignore`) — wajib unduh sekali via script di atas SEBELUM `npm run build`
+> (`.gitignore`) — wajib unduh sekali via script di atas SEBELUM `npm run setup`
 > (agar ikut ke `dist/models/`). Tanpa file ini, chip deteksi menampilkan
 > "Model deteksi gagal dimuat — klik untuk coba lagi" (stream tetap jalan).
 
@@ -122,6 +126,14 @@ Ganti kamera / URL stream: edit **hanya** `dashboard/src/config/cameras.ts`.
 
 ## 5. Build produksi
 
+Sejak #74, build produksi = bagian dari ritual root (tidak perlu manual):
+
+```bash
+npm run setup    # = dashboard: npm install + build · backend: npm install
+```
+
+Manual (bila perlu saja):
+
 ```bash
 cd dashboard
 npm run build        # = tsc -b && vite build
@@ -129,7 +141,7 @@ npm run build        # = tsc -b && vite build
 
 Hasil: `dashboard/dist/` berisi `index.html` + `assets/*.js` + `assets/*.css` (statis).
 Folder inilah yang disajikan backend (`express.static`). Tidak perlu copy manual
-ke mana-mana — cukup `npm start` di `backend/`.
+ke mana-mana — cukup `npm start` (root).
 
 **Catatan build (QA #54, temuan O1):** Vite memberi warning `chunk > 500 kB`
 (`index-*.js` ±759 KB — mayoritas hls.js). Ini **bukan bug**; untuk app localhost

@@ -38,7 +38,7 @@ gods-eye/
 │   │   │   ├── types.ts            # Kontrak data (Detection, Detector, DetectionPort)
 │   │   │   ├── vehicleConfig.ts    # Semua angka ajaib + URL model
 │   │   │   ├── yolo26n.ts          # Parse output [1,300,6], letterbox, preprocess
-│   │   │   ├── tracker.ts          # CentroidTracker: trackId + arah
+│   │   │   ├── tracker.ts          # ByteTracker (#74): Kalman + IoU 2-tahap
 │   │   │   ├── onnxDetector.ts     # Detector via ONNX Runtime (di worker)
 │   │   │   ├── detection.worker.ts # Worker inferensi ~10fps (non-blocking)
 │   │   │   ├── workerDetector.ts   # Pembungkus worker → Detector
@@ -84,7 +84,7 @@ langsung — selalu lewat `DetectionPort` (factory + interface di
 | `types.ts` | Kontrak data: `Detection`, `DetectionFrame`, `Detector`, `DetectionPort` (+ ekstensi UI `direction`) |
 | `vehicleConfig.ts` | SEMUA angka ajaib: URL model, threshold, warna box, thread WASM |
 | `yolo26n.ts` | Helper murni: letterbox, parse output `[1,300,6]` NMS-free, preprocess NCHW |
-| `tracker.ts` | `CentroidTracker`: trackId + arah dari delta y centroid + **velocity (vx, vy) + `predictBbox()` ekstrapolasi (#68)** |
+| `tracker.ts` | **`ByteTracker` (#74)**: port TypeScript ByteTrack (ECCV 2022) — Kalman filter 8-state + asosiasi IoU dua tahap (Hungarian) + birth/death + re-identifikasi via deteksi low-conf; adaptasi fps-rendah (fallback jarak-pusat). Menggantikan `CentroidTracker` (#60–#68). Kontrak output tak berubah (`TrackedDetection`, `predictBbox()`). |
 | `onnxDetector.ts` | `Detector` via ONNX Runtime (rantai provider **`webgl → wasm`** #68; jalan di worker) |
 | `detection.worker.ts` | Worker: inferensi + tracking, non-blocking; ukur `inferMs`/putaran; balas `"dropped"` eksplisit saat sibuk (#68) |
 | `workerDetector.ts` | Pembungkus worker → `Detector` untuk main thread; capture 960×540; `lastInferMs`/`lastProvider`/`lastTimedOut` (#68) |
