@@ -207,6 +207,15 @@ export class StreamHealth {
   private telemetryTimer: number | null = null;
   /** #68: ring buffer sampel playback (bukti uji 10+ menit). */
   private telemetry: TelemetrySample[] = [];
+  /** #70.3: watchdog pasca-resume (pulihkan media bila masih macet). */
+  private resumeWatchdogTimer: number | null = null;
+  /**
+   * #70.1: timestamp seek manual terakhir (ms). Penjaga DVR memberi masa
+   * tenggang setelah scrub user agar tidak langsung menarik maju.
+   */
+  private lastManualSeekAt = 0;
+  /** #70.1: masa tenggang guard DVR setelah scrub manual (ms). */
+  private readonly SCRUB_GRACE_MS = 30_000;
   private mediaRecoverTried = false;
   private prevFrames = 0;
   private prevFramesAt = 0;
@@ -234,6 +243,11 @@ export class StreamHealth {
   };
 
   private onVideoPlaying = (): void => {
+    // #70.3: resume berhasil — batalkan watchdog pemulihan.
+    if (this.resumeWatchdogTimer !== null) {
+      clearTimeout(this.resumeWatchdogTimer);
+      this.resumeWatchdogTimer = null;
+    }
     if (this.status === "buffering") {
       this.clearStallTimer();
       this.pushLog("ok", "Data stream kembali — pemutaran lanjut.");
@@ -279,6 +293,81 @@ export class StreamHealth {
    */
   guardDvrWindow(): boolean {
     return this.dvrWindowGuard();
+  }
+
+  /**
+   * #70.1 — SEEK MANUAL USER (scrub DVR bar). Kebijakan #69 (display-only)
+   * DIBATALKAN atas permintaan eksplisit Rama (15 Okt 2026 ~21:22).
+   * Target dijepit ke dalam jendela DVR [windowStart+1 .. fragEnd−0.5]
+   * agar tidak menabrak posisi kedaluwarsa/tepi live. Setelah seek,
+   * hls.startLoad() dipanggil agar pemuatan fragmen lanjut cepat
+   * (khusus saat paused, hls.js kadang idle).
+   * State pause TIDAK diubah: scrub saat jeda tetap jeda di posisi baru.
+   */
+  seekTo(targetSec: number): boolean {
+    const video = this.video;
+    const hls = this.hls;
+    if (!video) return false;
+    let lo = 0;
+    let hi = Number.POSITIVE_INFINITY;
+    const frags = hls?.levels?.[hls.currentLevel]?.details?.fragments;
+    if (frags && frags.length > 0) {
+      lo = frags[0].start + 1;
+      const last = frags[frags.length - 1];
+      hi = last.start + (last.duration || 0) - 0.5;
+    }
+    const t = Math.min(hi, Math.max(lo, targetSec));
+    if (!Number.isFinite(t)) return false;
+    try {
+      video.currentTime = t;
+      if (hls) {
+        try {
+          hls.startLoad();
+        } catch {
+          /* abaikan */
+        }
+      }
+      this.lastManualSeekAt = Date.now();
+      this.pushLog(
+        "info",
+        `Seek manual ke ${t.toFixed(1)} dtk (dalam jendela DVR).`,
+      );
+      this.updatePlaybackInfo();
+      this.emit();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * #70.3 — RESUME TAHAN BANTING (pengganti pola guardDvrWindow()+play()
+   * di UI). Dipanggil UI sebagai pengganti video.play() langsung. Urutan:
+   *   (1) penjaga DVR: pastikan posisi valid (bisa seek sekali);
+   *   (2) jaring pengaman clampToDvrWindow: bila posisi masih DI LUAR
+   *       jendela playlist (kedaluwarsa total — mis. jeda sangat lama),
+   *       paksa ke posisi aman; tanpa ini, play() di posisi basi = stuck
+   *       "buffering" selamanya (bug #70.3 laporan Rama);
+   *   (3) hls.startLoad(): setelah seek saat paused / posisi kedaluwarsa,
+   *       hls.js kadang tidak melanjutkan pemuatan fragmen sendiri
+   *       (startLoad no-op bila sudah loading — aman selalu dipanggil);
+   *   (4) watchdog resume: bila 4 dtk kemudian belum 'playing' dan masih
+   *       macet → recoverMediaError() sekali.
+   */
+  resumePlayback(): void {
+    const video = this.video;
+    if (!video || !video.paused) return;
+    this.dvrWindowGuard();
+    this.clampToDvrWindow();
+    if (this.hls) {
+      try {
+        this.hls.startLoad();
+      } catch {
+        /* abaikan */
+      }
+    }
+    void video.play().catch(() => undefined);
+    this.armResumeWatchdog();
   }
 
   /**
@@ -646,6 +735,11 @@ export class StreamHealth {
     // tiap detik — terpisah dari logika status di bawah, karena kontrol
     // play/pause + tampilan waktu butuh datanya di semua state sesi berjalan.
     this.updatePlaybackInfo();
+    // #70.2: emit TIAP DETIK walau status/delaySec tidak berubah. Akar bug
+    // "bar mentok": snapshot sebelumnya hanya di-emit saat status berubah —
+    // saat delay stabil (mis. "DELAY ±16 dtk" terus-menerus) UI tidak pernah
+    // menerima data playback baru → bar DVR & chip waktu tampak beku.
+    this.emit();
     const hls = this.hls;
     if (!hls || (this.status !== "live" && this.status !== "delay")) {
       return;
@@ -661,7 +755,10 @@ export class StreamHealth {
     // mengejar live edge; gap dibiarkan membesar. Satu-satunya seek yang
     // tersisa: PENJAGA JENDELA DVR di bawah — hanya bila posisi play hampir
     // kedaluwarsa dari playlist (data-driven), target tetap JAUH dari tepi.
-    if (this.dvrWindowGuard()) {
+    // #70.3: JANGAN jalankan guard saat video dijeda user — menarik frame
+    // yang sedang dilihat = perilaku salah; posisi kedaluwarsa ditangani
+    // saat resume via resumePlayback() (guard + clamp + startLoad).
+    if (!video.paused && this.dvrWindowGuard()) {
       return;
     }
 
@@ -703,8 +800,14 @@ export class StreamHealth {
 
     const windowStart = frags[0].start;
     const pos = video.currentTime;
+    // #70.1: masa tenggang setelah scrub manual — jangan langsung menarik
+    // maju posisi yang baru dipilih user; guard hanya bila BENAR-BENAR
+    // hampir kedaluwarsa (margin 2 dtk).
+    const scrubGrace =
+      Date.now() - this.lastManualSeekAt < this.SCRUB_GRACE_MS;
+    const margin = scrubGrace ? 2 : DVR_GUARD_MARGIN_SEC;
     // Masih aman: lebih dari margin di dalam jendela → tidak usah apa-apa.
-    if (pos > windowStart + DVR_GUARD_MARGIN_SEC) return false;
+    if (pos > windowStart + margin) return false;
 
     // Hampir kedaluwarsa: lompat SEKALI ke posisi aman yang tetap jauh
     // dari tepi. Jepit ke dalam jendela agar tidak seek ke posisi basi.
@@ -727,6 +830,77 @@ export class StreamHealth {
       // seek gagal — biarkan hls.js yang mengatur.
       return false;
     }
+  }
+
+  /**
+   * #70.3: paksa posisi ke dalam jendela DVR bila sudah keluar seluruhnya.
+   * dvrWindowGuard() hanya menangani "hampir kedaluwarsa"; ini menangani
+   * "sudah kedaluwarsa" (pos < windowStart, mis. jeda sangat lama) atau
+   * "melampaui live" (pos > edge). Mengembalikan true bila melakukan seek.
+   */
+  private clampToDvrWindow(): boolean {
+    const hls = this.hls;
+    const video = this.video;
+    if (!hls || !video) return false;
+    const frags = hls.levels?.[hls.currentLevel]?.details?.fragments;
+    if (!frags || frags.length === 0) return false;
+    const windowStart = frags[0].start;
+    const last = frags[frags.length - 1];
+    const windowEnd = last.start + (last.duration || 0);
+    const edge = hls.liveSyncPosition;
+    const edgeKnown = typeof edge === "number" && Number.isFinite(edge);
+    const pos = video.currentTime;
+    if (pos >= windowStart && (!edgeKnown || pos <= edge)) return false;
+    const target = Math.max(
+      windowStart + DVR_GUARD_MARGIN_SEC,
+      (edgeKnown ? edge : windowEnd) - DVR_SAFE_BEHIND_SEC,
+    );
+    try {
+      video.currentTime = target;
+      this.pushLog(
+        "warn",
+        `Resume: posisi ${pos.toFixed(1)} dtk di luar jendela DVR — dipindah ` +
+          `ke ${DVR_SAFE_BEHIND_SEC} dtk di belakang live edge.`,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * #70.3: watchdog pasca-resume. Bila 4 dtk setelah resumePlayback() video
+   * belum 'playing' dan masih macet (buffering / readyState rendah),
+   * coba pemulihan media hls.js sekali + startLoad().
+   */
+  private armResumeWatchdog(): void {
+    if (this.resumeWatchdogTimer !== null) {
+      clearTimeout(this.resumeWatchdogTimer);
+    }
+    this.resumeWatchdogTimer = window.setTimeout(() => {
+      this.resumeWatchdogTimer = null;
+      const video = this.video;
+      const hls = this.hls;
+      if (!video || !hls) return;
+      // Sudah jalan normal: diam.
+      if (!video.paused && this.status !== "buffering") return;
+      if (this.status === "buffering" || video.readyState < 2) {
+        this.pushLog(
+          "warn",
+          "Resume macet >4 dtk — mencoba pemulihan media hls.js…",
+        );
+        try {
+          hls.recoverMediaError();
+        } catch {
+          /* abaikan */
+        }
+        try {
+          hls.startLoad();
+        } catch {
+          /* abaikan */
+        }
+      }
+    }, 4000);
   }
 
   /**
@@ -904,6 +1078,10 @@ export class StreamHealth {
   private clearAllTimers(): void {
     this.clearReconnectTimers();
     this.clearStallTimer();
+    if (this.resumeWatchdogTimer !== null) {
+      clearTimeout(this.resumeWatchdogTimer);
+      this.resumeWatchdogTimer = null;
+    }
     const timers = [
       this.delayTimer,
       this.uptimeTimer,

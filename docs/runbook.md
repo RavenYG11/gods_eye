@@ -228,14 +228,22 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
       bertambah/berkurang mulai frame berikutnya TANPA reload. (#68: default
       0,5→0,4 — kendaraan jelas di CCTV malam skor 51–54%, nyaris gugur di
       0,5.) Naikkan bila box palsu; turunkan bila kendaraan jauh tak terdeteksi.
-- [ ] **#69 — Kontrol playback:** tombol ▶/❚❚ di kiri tombol deteksi — klik
+- [ ] **#69/#70 — Kontrol playback:** tombol ▶/❚❚ di kiri tombol deteksi — klik
       → video jeda (ikon jadi ▶ + aksen hijau), klik lagi → lanjut. Klik
       video juga toggle. Chip kiri bawah menampilkan "−N dtk dari live"
-      (atau "● live" bila ≤3 dtk) + "dijeda ·" saat pause. Progress bar
-      tipis di atas tepi bawah menunjukkan posisi play dalam jendela DVR.
-      Saat dijeda: box deteksi BEKU di posisi terakhir (tidak jalan sendiri).
-      Jeda 3+ menit lalu resume → lanjut mulus TANPA buffering berulang
-      (penjaga DVR #68). 
+      (atau "● live" bila ≤3 dtk) + "DIJEDA" saat pause. **Bar DVR kini
+      BISA DI-SCRUB** (#70.1, kebijakan display-only dibatalkan): klik/drag/
+      ←→/Home/End → posisi play pindah dalam jendela DVR (dijepit otomatis).
+      **Angka di bawah bar** (#70): "00:46 / 01:02" = posisi/panjang jendela.
+      Bar & chip update TIAP DETIK (#70.2 — dulu "mentok" saat delay stabil).
+      Saat dijeda: box deteksi BEKU di posisi terakhir (tidak jalan sendiri);
+      guard DVR tidak menarik frame yang dijeda. **Resume kritis** (#70.3):
+      jeda 3+ menit (posisi kedaluwarsa) → klik play → HARUS jalan <3 dtk
+      (clamp ke edge−25 dtk + startLoad + watchdog recoverMediaError);
+      bila masih stuck >4 dtk, log mencatat "Resume macet".
+- [ ] **#70.4 — Tombol unduh log:** header panel "Log koneksi" kini punya
+      tombol **"Unduh log playback"** di samping "Bersihkan" (selain yang di
+      popover metrik) — klik → file JSON terunduh.
 - [ ] Pagar scope tetap: **tanpa tombol record**, tanpa face recognition.
       (Panel deteksi kini ADA — larangan dicabut Rama 15 Okt 2026 14:37 WIB.)
 
