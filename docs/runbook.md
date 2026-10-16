@@ -48,7 +48,7 @@ Browser (laptop Rama, jaringan rumah)
 
 | Kebutuhan | Minimal |
 |---|---|
-| Node.js + npm | Node 18+ (cek: `node -v`, `npm -v`) |
+| Node.js + npm | Node **22.5+** (cek: `node -v`, `npm -v`) — syarat `node:sqlite` bawaan sejak #73 |
 | Browser | Chrome / Edge terbaru (mendukung MSE + hls.js) |
 | Git | untuk clone repo |
 | Jaringan rumah | **wajib dari IP rumah** — server CCTV memblokir IP data center/VM (terbukti di riset) |
@@ -315,7 +315,8 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 | Box palsu bermunculan (bayangan, marka jalan) | Ambang confidence terlalu rendah | **Naikkan slider "Confidence"** (card "Deteksi kendaraan" di kanan video) — mis. 0,60–0,70; berlaku instan |
 | Kendaraan jauh tidak terdeteksi | Ambang confidence terlalu tinggi | **Turunkan slider "Confidence"** — mis. 0,30–0,40; bila tetap hilang, itu batas resolusi model, bukan bug |
 | Badge `◌ BUFFERING` terus-menerus | Bandwidth tidak cukup untuk level 1080p | App otomatis turunkan kualitas (stall > 10 dtk); bila tetap, cek kecepatan internet |
-| `npm install` gagal | Node terlalu lama / cache korup | `node -v` (butuh 18+); `npm cache clean --force` lalu ulangi |
+| `npm install` gagal | Node terlalu lama / cache korup | `node -v` (butuh **22.5+** sejak #73 — `node:sqlite` modul bawaan); `npm cache clean --force` lalu ulangi |
+| `npm install` gagal: `node-gyp` / butuh Visual Studio | (Pra-#73) `better-sqlite3` tanpa prebuilt untuk Node 24 | **Sudah diperbaiki #73** — backend kini pakai `node:sqlite` bawaan, nol native dependency. Bila masih muncul: pastikan pull sudah mencakup commit #73 |
 | Log koneksi kosong | JS error / bundle gagal load | Buka DevTools → Console; pastikan `npm run build` sukses & `dist/` lengkap |
 
 **Aturan diagnosis (gaya kerja Epthal): periksa log sebelum menyimpulkan.**
@@ -367,9 +368,9 @@ gods_eye/
 ├── .gitignore                # node_modules/, dist/, bobot model (*.onnx/*.pt/…)
 ├── backend/                  # ★ BACKEND (#59) — Node.js + Express
 │   ├── server.js             # Reverse proxy /cctv/* + serve dashboard/dist + /api/health + /api/dataset (#72 DB)
-│   ├── lib/dataset-db.js     # #72 FINAL: modul SQLite dataset (better-sqlite3) — skema, seed, CRUD
+│   ├── lib/dataset-db.js     # #72 FINAL + #73: modul SQLite dataset (node:sqlite bawaan Node ≥22.5) — skema, seed, CRUD
 │   ├── data/dataset.db       # (dibuat otomatis, DI-GITIGNORE — jangan di-commit)
-│   ├── package.json          # express + http-proxy-middleware + better-sqlite3
+│   ├── package.json          # express + http-proxy-middleware (nol native dep sejak #73)
 │   └── README.md             # Cara jalan backend + env var + batasan
 ├── dashboard/                # App (React 18 + Vite + TS + hls.js) — TANPA node_modules/ & dist/
 │   ├── src/

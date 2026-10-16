@@ -100,6 +100,9 @@ app.get("/api/health", (_req, res) => {
 // ---------------------------------------------------------------------------
 // #72 (16 Okt 2026, FINAL — keputusan Rama: gambar disimpan di DATABASE
 // SQLite, BUKAN file).
+// #73 (16 Okt 2026 — engine diganti better-sqlite3 → node:sqlite bawaan Node
+// >= 22.5: better-sqlite3@13.0.3 tidak punya prebuilt untuk ABI Node 24,
+// `npm install` di laptop Rama gagal total tanpa Visual Studio).
 //   POST   /api/dataset            → tambah 1 sampel {label, source, dataUrl}
 //   GET    /api/dataset            → {ok, items, counts} (metadata TANPA blob)
 //   GET    /api/dataset/:id/image  → biner gambar (Content-Type asli)
@@ -198,15 +201,14 @@ app.delete("/api/dataset/:id", (req, res) => {
     return res.status(400).json({ ok: false, error: "id tidak valid" });
   }
   try {
-    const row = getImage(id);
-    if (!row) return res.status(404).json({ ok: false, error: "gambar tidak ditemukan" });
-    if (row.source === "seed") {
-      return res.status(403).json({ ok: false, error: "sampel seed tidak bisa dihapus via API" });
-    }
-    deleteImage(id);
+    const removed = deleteImage(id); // SEED_PROTECTED bila source='seed' (#73)
+    if (!removed) return res.status(404).json({ ok: false, error: "gambar tidak ditemukan" });
     console.log(`[gods-eye] dataset: - id=${id}`);
     res.json({ ok: true, removed: id });
   } catch (err) {
+    if (err?.message === "SEED_PROTECTED") {
+      return res.status(403).json({ ok: false, error: "sampel seed tidak bisa dihapus via API" });
+    }
     console.error("[gods-eye] dataset DELETE gagal:", err.message);
     res.status(500).json({ ok: false, error: "gagal menghapus gambar" });
   }
