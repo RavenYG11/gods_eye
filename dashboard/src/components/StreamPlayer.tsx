@@ -161,10 +161,10 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
   // dijepit engine ke dalam jendela DVR [windowStart..liveEdge].
   const seekRatio = useCallback(
     (ratio: number) => {
-      const { windowStart, edge } = playback;
-      if (!(windowStart >= 0) || !(edge > windowStart)) return;
+      const { windowStart, windowEnd } = playback;
+      if (!(windowStart >= 0) || !(windowEnd > windowStart)) return;
       const r = Math.min(1, Math.max(0, ratio));
-      seekTo(windowStart + r * (edge - windowStart));
+      seekTo(windowStart + r * (windowEnd - windowStart));
     },
     [playback, seekTo],
   );
@@ -208,9 +208,9 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
     endScrub();
   };
   const onBarKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    const { windowStart, edge, pos } = playback;
-    if (!(windowStart >= 0) || !(edge > windowStart)) return;
-    const step = (edge - windowStart) / 20; // ±5% jendela per tekan
+    const { windowStart, windowEnd, pos } = playback;
+    if (!(windowStart >= 0) || !(windowEnd > windowStart)) return;
+    const step = (windowEnd - windowStart) / 20; // ±5% jendela per tekan
     if (e.key === "ArrowLeft") {
       e.preventDefault();
       seekTo(pos - step);
@@ -222,7 +222,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
       seekTo(windowStart + 1);
     } else if (e.key === "End") {
       e.preventDefault();
-      seekTo(edge - 1);
+      seekTo(windowEnd - 1);
     }
   };
 
@@ -250,20 +250,25 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
 
   // #70.1 — BAR JENDELA DVR KINI BISA DI-SCRUB (klik/drag/arrow keys).
   // Kebijakan display-only #69 DIBATALKAN atas permintaan Rama.
-  // Bar menunjukkan posisi play dalam [windowStart, liveEdge]; engine
-  // menjepit target seek ke dalam jendela + memberi masa tenggang guard.
+  // Bar menunjukkan posisi play dalam [windowStart, windowEnd] — ujung
+  // kanan = AKHIR FRAGMEN TERAKHIR playlist (faktual dari LEVEL_UPDATED),
+  // BUKAN liveSyncPosition (posisi target playback hls.js — lihat
+  // streamHealth.ts PlaybackInfo.windowEnd; itulah akar "menunggu info
+  // DVR…" abadi #75). Engine menjepit target seek ke dalam jendela +
+  // memberi masa tenggang guard.
   // #74: info jendela valid? Bila belum (stream baru dimuat), bar masuk
   // mode disabled yang JUJUR (redup, tidak bisa di-slide) — bukan diam
   // misterius seperti sebelum #74.
+  // #75: dvrState "unavailable" = >20 dtk tanpa info jendela → pesan jujur.
   const dvrReady =
-    playback.windowStart >= 0 && playback.edge > playback.windowStart;
+    playback.windowStart >= 0 && playback.windowEnd > playback.windowStart;
   const barPct = dvrReady
     ? Math.min(
         100,
         Math.max(
           0,
           ((playback.pos - playback.windowStart) /
-            (playback.edge - playback.windowStart)) *
+            (playback.windowEnd - playback.windowStart)) *
             100,
         ),
       )
@@ -281,7 +286,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
             Math.max(
               0,
               ((playback.bufStart - playback.windowStart) /
-                (playback.edge - playback.windowStart)) *
+                (playback.windowEnd - playback.windowStart)) *
                 100,
             ),
           ),
@@ -290,7 +295,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
             Math.max(
               0,
               ((playback.bufEnd - playback.bufStart) /
-                (playback.edge - playback.windowStart)) *
+                (playback.windowEnd - playback.windowStart)) *
                 100,
             ),
           ),
@@ -299,9 +304,11 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
   const gapSec =
     playback.bufEnd >= 0 ? Math.max(0, playback.bufEnd - playback.pos) : -1;
   const pbTitle = !dvrReady
-    ? "Menunggu info jendela DVR dari stream…"
+    ? playback.dvrState === "unavailable"
+      ? "Info jendela DVR tidak tersedia dari stream ini."
+      : "Menunggu info jendela DVR dari stream…"
     : `Posisi ${playback.pos.toFixed(1)} dtk · jendela DVR ` +
-      `${playback.windowStart.toFixed(0)}–${playback.edge.toFixed(0)} dtk` +
+      `${playback.windowStart.toFixed(0)}–${playback.windowEnd.toFixed(0)} dtk` +
       (gapSec >= 0 ? ` · buffer ${gapSec.toFixed(1)} dtk di depan` : "") +
       " · klik/drag/←→ untuk maju-mundur (#70)";
 
@@ -310,13 +317,18 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
   // denominator "lifetime tab" (#71) yang membingungkan — untuk live HLS
   // tidak ada durasi klasik; yang bermakna adalah rentang yang bisa
   // di-scrub. Contoh: "00:17 / 01:02".
-  const windowLenSec = dvrReady ? playback.edge - playback.windowStart : 0;
+  const windowLenSec = dvrReady ? playback.windowEnd - playback.windowStart : 0;
   const shownPosSec = dvrReady
     ? (shownPct / 100) * windowLenSec
     : 0;
+  // #75: fallback JUJUR bila info jendela memang tak tersedia dari stream
+  // (dvrState "unavailable" — >20 dtk tanpa LEVEL_UPDATED): katakan terus
+  // terang, jangan "menunggu…" selamanya dan jangan angka palsu.
   const dvrTimeText = dvrReady
     ? `${formatDvrClock(shownPosSec)} / ${formatDvrClock(windowLenSec)}`
-    : "menunggu info DVR…";
+    : playback.dvrState === "unavailable"
+      ? "info jendela DVR tidak tersedia dari stream ini"
+      : "menunggu info DVR…";
 
   const bitrateText =
     metrics.bitrateMbps !== null ? `${metrics.bitrateMbps} Mbps` : "–";

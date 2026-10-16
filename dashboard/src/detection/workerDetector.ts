@@ -132,6 +132,23 @@ export class WorkerVehicleDetector implements Detector {
       if (frame.readyState < 2 || frame.videoWidth === 0) return [];
       this.lastSkipped = false; // lolos semua guard → inferensi beneran
 
+      // #75 — PERBAIKAN RACE inflight (akar "box muncul lalu DIAM",
+      // diagnosis #75): SEBELUM: inflight=true dipasang SETELAH
+      // `await createImageBitmap(...)`. Dua tick interval (100 ms) bisa
+      // interleave: keduanya lolos guard (inflight masih false), keduanya
+      // menimpa this.pendingResult, keduanya postMessage. Worker
+      // (MAX_INFLIGHT=1) memproses pesan pertama, pesan kedua dibalas
+      // "dropped" → resolver KEDUA mengkonsumsi pendingResult → HASIL
+      // INFERENSI PERTAMA YANG ASLI HILANG (resolve?.() = no-op) → promise
+      // pertama menggantung sampai timeout 30 dtk → inflight macet 30 dtk →
+      // SEMUA detect() me-return [] selama itu → overlay tak pernah
+      // di-update → box BEKU setelah PREDICT_CAP_S=3 dtk ("DIAM"); saat
+      // pulih, box melompat ("patah-patah"). SESUDAH: inflight=true
+      // dipasang SINKRON di sini (sebelum await pertama) → saling
+      // meniadakan antar-tick mustahil; guard di atas kini benar-benar
+      // eksklusif. finally di bawah tetap mengembalikannya.
+      this.inflight = true;
+
       // #68: tangkap frame dalam resolusi lebih kecil (960×540, bukan
       // 1920×1080). Dua penghematan: (a) transfer ImageBitmap antar-thread
       // 8MB → ±2MB per frame; (b) createImageBitmap di main thread lebih
@@ -149,7 +166,7 @@ export class WorkerVehicleDetector implements Detector {
       } catch {
         bitmap = await createImageBitmap(frame);
       }
-      this.inflight = true;
+      // #75: inflight sudah true (dipasang sinkron di atas) — tidak di sini.
       // #74: dimensi bitmap DIBEKUKAN di sini — setelah postMessage + transfer,
       // bitmap di-neuter (tidak bisa dibaca lagi), padahal dibutuhkan untuk
       // skala ruang koordinat di bawah.

@@ -380,6 +380,10 @@ function pairCost(
   trackBox: [number, number, number, number],
   detBox: [number, number, number, number],
   iouGate: number,
+  /**
+   * #75: gate jarak PER PASANGAN (boleh beda per track — lihat gateFor di
+   * updateGroup: dibuka sebanding dt sejak track terakhir terlihat).
+   */
   distGatePx: number,
 ): number {
   const iou = iouXYWH(trackBox, detBox);
@@ -392,12 +396,14 @@ function pairCost(
 /**
  * Asosiasi optimum track↔deteksi. Mengembalikan pasangan (trackIdx, detIdx)
  * yang biayanya < FORBIDDEN_COST; sisanya "tak cocok".
+ * #75: distGatesPx = gate jarak PER TRACK (sepanjang nT) — asosiasi kini
+ * sadar-waktu (lihat gateFor di updateGroup).
  */
 function associate(
   trackBoxes: Array<[number, number, number, number]>,
   detBoxes: Array<[number, number, number, number]>,
   iouGate: number,
-  distGatePx: number,
+  distGatesPx: number[],
 ): {
   matches: Array<[number, number]>;
   unmatchedTracks: number[];
@@ -417,7 +423,7 @@ function associate(
   const cost: number[][] = Array.from({ length: n }, (_, i) =>
     Array.from({ length: n }, (_, j) => {
       if (i < nT && j < nD)
-        return pairCost(trackBoxes[i], detBoxes[j], iouGate, distGatePx);
+        return pairCost(trackBoxes[i], detBoxes[j], iouGate, distGatesPx[i]);
       return FORBIDDEN_COST; // sel dummy — selalu kalah dari pasangan valid
     }),
   );
@@ -569,12 +575,35 @@ export class ByteTracker {
 
     const refreshed = new Set<Track>();
 
+    // #75 — GATE ADAPTIF WAKTU (akar "box muncul lalu DIAM"; bukti: uji Node
+    // stress.mjs skenario A — 12 frame deteksi @1fps, objek 250px/dtk →
+    // 12 ID berbeda, semua vx=0.0). Jarak tempuh antar-deteksi = kecepatan ×
+    // dt; gate piksel TETAP (200px) + inferensi lambat (dt besar di CPU i5)
+    // = asosiasi SELALU gagal untuk kendaraan cepat/dekat kamera → tiap
+    // deteksi melahirkan track BARU berv=0 → overlay mengekstrapolasi dengan
+    // v=0 → box DIAM di posisi lahir, lalu melompat ke posisi baru
+    // ("patah-patah"). Gate kini dibuka sebanding dt sejak track terakhir
+    // terlihat, dibatasi kecepatan maksimum yang masih masuk akal
+    // (maxSpeedPxS — KONSISTEN dengan jepit velocity output di refreshTrack:
+    // track tak mungkin ditemukan lebih jauh dari maxSpeed×dt). Untuk
+    // deteksi cepat (dt kecil) gate = nilai dasar → perilaku tak berubah.
+    // Catatan tradeoff (jujur): gate lebar memudahkan re-identifikasi BENAR
+    // sekaligus membuka peluang salah-re-id bila kendaraan asli sudah pergi;
+    // Hungarian (biaya global minimum) + IoU tetap memprioritaskan pasangan
+    // terdekat, dan kerusakan ID-switch kronis (pasti) lebih buruk daripada
+    // risiko salah-re-id (kadang-kadang).
+    const gateFor = (t: Track, basePx: number): number =>
+      Math.max(
+        basePx,
+        o.maxSpeedPxS * Math.max(0, framePts - t.lastSeenPts),
+      );
+
     // 3) TAHAP-1: semua track (aktif + hilang) ↔ deteksi high-confidence.
     const s1 = associate(
       groupTracks.map((t) => t.kf.box),
       high.map((d) => d.bbox),
       o.iouGateHigh,
-      o.distGateHighPx,
+      groupTracks.map((t) => gateFor(t, o.distGateHighPx)),
     );
     const s1MatchedTrackIdx = new Set<number>();
     const s1MatchedDetIdx = new Set<number>();
@@ -596,7 +625,7 @@ export class ByteTracker {
       s1UnmatchedActive.map((t) => t.kf.box),
       low.map((d) => d.bbox),
       o.iouGateLow,
-      o.distGateLowPx,
+      s1UnmatchedActive.map((t) => gateFor(t, o.distGateLowPx)),
     );
     for (const [ti, di] of s2.matches) {
       const tr = s1UnmatchedActive[ti];
