@@ -34,6 +34,7 @@ export interface StreamSession {
 const INITIAL: StreamSnapshot = {
   status: "loading",
   paused: false,
+  prebuffering: false,
   playback: { pos: 0, bufStart: -1, bufEnd: -1, edge: -1, windowStart: -1 },
   delaySec: 0,
   attempt: 0,

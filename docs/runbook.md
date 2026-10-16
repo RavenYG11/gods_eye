@@ -190,25 +190,45 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 - [ ] Klik badge → popover "Metrik sesi berjalan": bitrate, resolusi, FPS **terisi angka** (bukan `–`).
 - [ ] Matikan WiFi ±10 detik → badge **◌ BUFFERING** lalu **↻ MENYAMBUNG ULANG**,
       log mencatat urutan backoff (1s → 2s → 5s → 15s → 30s); nyalakan WiFi → kembali **LIVE**.
-- [ ] **#60/#66/#68 — Anti-buffering:** setelah stream stabil, badge menunjukkan
-      **● DELAY · ±5 dtk** (BUKAN LIVE — ini disengaja) + strip bawah
-      "Anti-buffering aktif — tertinggal ±5 dtk (sengaja, agar gambar tidak tersendat)".
-      (#66: offset dijaga NATIF oleh hls.js `liveSyncDuration: 5` — TIDAK ADA
+- [ ] **#60/#66/#68/#71 — Anti-buffering:** setelah stream stabil, badge menunjukkan
+      **● DELAY · ±45 dtk** (BUKAN LIVE — ini disengaja). Info delay tampil
+      JUJUR sebagai ringkasan di panel **"Log koneksi"** (#71: strip kuning
+      bawah video DIHAPUS).
+      (#66: offset dijaga NATIF oleh hls.js `liveSyncDuration` — TIDAK ADA
       lagi seek manual per detik; log "Anti-buffering: posisi diset…" pola #60
       sudah dihapus. Buffering berulang + log "stall teratasi" terus-menerus =
       regresi pola #60, laporkan.)
       (#68: `liveMaxLatencyDuration: Infinity` — player TIDAK PERNAH ditarik
       mengejar live edge; `emergencyResync` DIHAPUS → penjaga jendela DVR
-      (seek hanya bila posisi hampir kedaluwarsa, target edge−25 dtk).
+      (seek hanya bila posisi hampir kedaluwarsa, target edge−45 dtk).
       BUKTI UJI: klik badge → popover metrik → "Unduh log playback (JSON)"
-      → biarkan 10+ menit → kolom `gap` (bufEnd−pos) harus TUMBUH/STABIL,
-      bukan menyusut ke nol; TIDAK BOLEH ada siklus buffering berulang.)
+      → biarkan 10+ menit → kolom `gap` (bufEnd−pos) harus TUMBUH/STABIL
+      di sekitar 45 dtk, bukan menyusut ke nol; TIDAK BOLEH ada siklus
+      buffering berulang.)
+      (#71 — ANGKA KONFIG, `dashboard/src/lib/streamHealth.ts` → `new Hls()`:
+      `liveSyncDuration: 45` (target ±45 dtk di belakang live edge —
+      AKAR LAG: nilai lama 5 dtk < ekor fetch 1 segmen lambat
+      `fragLoadingMaxRetry: 4` × `fragLoadingRetryDelay: 2000` = 8 dtk+,
+      sehingga tiap jitter = event `waiting` = overlay "Buffering…"),
+      `maxBufferLength: 120`, `maxMaxBufferLength: 600`,
+      `backBufferLength: 90` (scrub DVR mundur tidak langsung fetch ulang),
+      `liveMaxLatencyDuration: Infinity` (tetap), `maxLiveSyncPlaybackRate: 1`
+      (tetap), `DVR_SAFE_BEHIND_SEC = 45` (selaras cushion).
+      LOGIKA TAMBAHAN: **penjaga prebuffer internal** — bila gap < 8 dtk
+      selagi diputar → `video.pause()` agar hls.js mengisi buffer sampai
+      ≥30 dtk lalu `play()` — TANPA overlay spinner (flag `prebuffering`
+      di snapshot; chip tidak tampil "DIJEDA"); timeout 25 dtk → kembali
+      ke jalur buffering normal. Log mencatat "Prebuffer: cushion menipis…"
+      bila aktif — kemunculannya = sinyal jaringan sedang berat, bukan bug.)
 - [ ] **#60 — Deteksi kendaraan:** box muncul di atas kendaraan —
       **BIRU = ke atas, HIJAU = ke bawah**, label "mobil/motor + % + #id"
-      (#62: kelas truk DIHAPUS — hanya motor & mobil). Chip kanan-bawah
-      "Deteksi: N fps · Mms · webgl|wasm" (N = fps RIIL hasil inferensi,
-      M = biaya/putaran worker, provider = bukti GPU dipakai/tidak).
-      Tombol ◎ mematikan/menyalakan overlay.
+      (#62: kelas truk DIHAPUS — hanya motor & mobil). **#71:** indikator
+      pindah dari dalam video ke card **"Deteksi kendaraan" di KANAN video**
+      (responsif: menumpuk di bawah pada layar ≤1100px): "Deteksi: N fps ·
+      Mms · webgl|wasm" (N = fps RIIL hasil inferensi, M = biaya/putaran
+      worker, provider = bukti GPU dipakai/tidak) + slider confidence +
+      tombol Nyalakan/Matikan deteksi. Card video bersih: hanya video +
+      DVR bar + kontrol play.
 - [ ] **#62/#68 — Anti-kedip + prediksi gerak:** box TIDAK boleh muncul-hilang
       sepersekian detik. Uji: amati 1 kendaraan lewat — box MENGIKUTI MULUS
       pada frame-rate video (prediksi velocity #68), tidak tertinggal jauh;
@@ -223,23 +243,31 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
       yang boleh berubah hanya tinggi maksimal (video letterbox tipis bila
       viewport sangat pendek — dapat diterima). Fullscreen: player mengisi
       penuh viewport tanpa terpotong.)
-- [ ] **#62/#68 — Slider threshold:** pojok kanan bawah player ada kontrol
-      "Threshold 0.40" + slider 0,10–0,90. Geser → nilai berubah, box
+      (#71: card deteksi di kanan video; di layar ≤1100px card turun ke
+      bawah. TIDAK ADA tooltip saat hover DVR bar/chip waktu/angka durasi —
+      `title` dihapus total.)
+- [ ] **#62/#68 — Slider threshold:** card "Deteksi kendaraan" di kanan video
+      (#71: pindah dari pojok kanan bawah player) berisi kontrol
+      "Confidence 0.40" + slider 0,10–0,90. Geser → nilai berubah, box
       bertambah/berkurang mulai frame berikutnya TANPA reload. (#68: default
       0,5→0,4 — kendaraan jelas di CCTV malam skor 51–54%, nyaris gugur di
       0,5.) Naikkan bila box palsu; turunkan bila kendaraan jauh tak terdeteksi.
-- [ ] **#69/#70 — Kontrol playback:** tombol ▶/❚❚ di kiri tombol deteksi — klik
-      → video jeda (ikon jadi ▶ + aksen hijau), klik lagi → lanjut. Klik
-      video juga toggle. Chip kiri bawah menampilkan "−N dtk dari live"
-      (atau "● live" bila ≤3 dtk) + "DIJEDA" saat pause. **Bar DVR kini
-      BISA DI-SCRUB** (#70.1, kebijakan display-only dibatalkan): klik/drag/
-      ←→/Home/End → posisi play pindah dalam jendela DVR (dijepit otomatis).
-      **Angka di bawah bar** (#70): "00:46 / 01:02" = posisi/panjang jendela.
+- [ ] **#69/#70/#71 — Kontrol playback:** tombol ▶/❚❚ di kanan bawah video
+      (sebelah tombol fullscreen) — klik → video jeda (ikon jadi ▶ + aksen
+      hijau), klik lagi → lanjut. Klik video juga toggle. Chip kiri bawah
+      menampilkan "−N dtk dari live" (atau "LIVE" bila ≤3 dtk) + "DIJEDA"
+      saat pause (#71: jeda internal prebuffer TIDAK tampil "DIJEDA").
+      **Bar DVR BISA DI-SCRUB** (#70.1): klik/drag/←→/Home/End → posisi play
+      pindah dalam jendela DVR (dijepit otomatis); **#71: bar DIPERPANJANG
+      hampir selebar video** (dulu 280px).
+      **Angka di bawah bar** (#71, revisi #70): "00:46 / 12:03" = posisi
+      playback dalam jendela DVR / LIFETIME sejak tab dibuka (reset hanya
+      saat tab di-close/restart).
       Bar & chip update TIAP DETIK (#70.2 — dulu "mentok" saat delay stabil).
       Saat dijeda: box deteksi BEKU di posisi terakhir (tidak jalan sendiri);
       guard DVR tidak menarik frame yang dijeda. **Resume kritis** (#70.3):
       jeda 3+ menit (posisi kedaluwarsa) → klik play → HARUS jalan <3 dtk
-      (clamp ke edge−25 dtk + startLoad + watchdog recoverMediaError);
+      (clamp ke edge−45 dtk + startLoad + watchdog recoverMediaError);
       bila masih stuck >4 dtk, log mencatat "Resume macet".
 - [ ] **#70.4 — Tombol unduh log:** header panel "Log koneksi" kini punya
       tombol **"Unduh log playback"** di samping "Bersihkan" (selain yang di
@@ -272,8 +300,8 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 | Chip "Model deteksi gagal dimuat" | `yolo26n.onnx` belum diunduh / build sebelum unduh | `scripts\unduh-model.bat` → `npm run build` ulang; klik chip untuk coba lagi |
 | Deteksi lambat (< 5 fps) di laptop | CPU lemah / tab lain berat | Tutup tab berat; ORT otomatis 1 thread bila tanpa COOP/COEP — pastikan via backend/:3000 |
 | Box deteksi berkedip (muncul-hilang) | (Pra-#62) render dari raw detection | **Sudah diperbaiki #62** (render dari tracker + grace ±0,7 dtk + EMA). Bila masih kedip setelah pull terbaru: catat pola (kendaraan jauh/dekat?) lalu lapor — jangan edit ambang dulu |
-| Box palsu bermunculan (bayangan, marka jalan) | Ambang confidence terlalu rendah | **Naikkan slider "Threshold"** (pojok kanan bawah player) — mis. 0,60–0,70; berlaku instan |
-| Kendaraan jauh tidak terdeteksi | Ambang confidence terlalu tinggi | **Turunkan slider "Threshold"** — mis. 0,30–0,40; bila tetap hilang, itu batas resolusi model, bukan bug |
+| Box palsu bermunculan (bayangan, marka jalan) | Ambang confidence terlalu rendah | **Naikkan slider "Confidence"** (card "Deteksi kendaraan" di kanan video) — mis. 0,60–0,70; berlaku instan |
+| Kendaraan jauh tidak terdeteksi | Ambang confidence terlalu tinggi | **Turunkan slider "Confidence"** — mis. 0,30–0,40; bila tetap hilang, itu batas resolusi model, bukan bug |
 | Badge `◌ BUFFERING` terus-menerus | Bandwidth tidak cukup untuk level 1080p | App otomatis turunkan kualitas (stall > 10 dtk); bila tetap, cek kecepatan internet |
 | `npm install` gagal | Node terlalu lama / cache korup | `node -v` (butuh 18+); `npm cache clean --force` lalu ulangi |
 | Log koneksi kosong | JS error / bundle gagal load | Buka DevTools → Console; pastikan `npm run build` sukses & `dist/` lengkap |
@@ -396,6 +424,36 @@ gods_eye/
   ke tinggi viewport → DevTools tak bisa menyusutkan card; `:fullscreen` dikecualikan
   dari max-height. Terverifikasi VM: `npm run build` (tsc + vite) bersih,
   `node --check` backend OK. ⚠️ **Verifikasi kelancaran stream + layout WAJIB di laptop Rama.** |
+| 71 | Gunet | **7 PERBAIKAN — JANGAN PUSH** (workflow mengikat: build → lapor Rama → push bila setuju).
+  Laporan Rama 16 Okt 2026 09:33 WIB (8 screenshot): (1) **Layout:** slider confidence +
+  indikator deteksi PINDAH ke card baru "Deteksi kendaraan" di KANAN video
+  (`DetectionPanel.tsx`; `useDetection` diangkat ke App; responsif ≤1100px menumpuk);
+  card video bersih (hanya video + DVR bar + kontrol play). (2) **Tooltip delay DVR bar
+  DIHAPUS TOTAL** (`title` pada bar/chip/angka — bukan disembunyikan).
+  (3) **DVR bar DIPERPANJANG** hampir selebar video (dulu 280px).
+  (4) **Dataset seed:** 2 crop kiriman Rama → `dashboard/public/dataset/`
+  (`motor-1.png` 64×117, `mobil-1.png` 126×92) + `dataset.json` + `docs/dataset.md`
+  (JUJUR: 1 sampel/kelas = seed referensi visual/QA, BUKAN training set;
+  konvensi `motor-2.png`, `mobil-2.png`, dst; folder dataset dikecualikan dari
+  ignore — disetujui manajer). (5) **Strip kuning delay DIHAPUS** — info
+  "tertinggal ±N dtk" pindah ke panel Log koneksi (baris ringkasan `.log-delay`).
+  (6) **Buffering — AKAR DITEMUKAN (bukti kode):** `liveSyncDuration: 5` →
+  hls.js menargetkan posisi TEPAT 5 dtk di belakang live edge (latency-controller:
+  targetLatency = liveSyncDuration); cushion 5 dtk < ekor fetch 1 segmen lambat
+  (`fragLoadingMaxRetry: 4` × `fragLoadingRetryDelay: 2000` = 8 dtk+) → tiap
+  jitter = event `waiting` = overlay "Buffering…" = "dashboard ngelag padahal situs
+  Bekasi lancar" (situs Bekasi pakai cushion puluhan detik). Perbaikan:
+  `liveSyncDuration: 45`, `maxBufferLength: 120`, `maxMaxBufferLength: 600`,
+  `backBufferLength: 90`, `DVR_SAFE_BEHIND_SEC` 25→45 (selaras cushion),
+  `liveMaxLatencyDuration: Infinity` + `maxLiveSyncPlaybackRate: 1` tetap;
+  **penjaga prebuffer internal**: gap (bufEnd−pos) < 8 dtk → `video.pause()`
+  agar hls.js mengisi buffer sampai ≥30 dtk lalu `play()` — TANPA overlay
+  spinner (flag `prebuffering` di snapshot; chip tak tampil "DIJEDA");
+  timeout 25 dtk → jalur buffering normal. (7) **Angka durasi:**
+  denominator = LIFETIME sejak tab dibuka ("00:46 / 12:03"); posisi tetap
+  posisi playback dalam jendela DVR. Terverifikasi VM: `npx tsc -b --force`
+  0 error + `npm run build` sukses. ⚠️ **Stream runtime + 7 poin WAJIB
+  verifikasi Rama di laptop (checklist §7).** |
 
 Berikutnya (sesuai urutan Meeting #4): Rama pilih hasil benchmark model i5 →
 pencabutan larangan detection → fase deteksi (arsitektur ulang + audit Cipher fokus model & UU PDP).

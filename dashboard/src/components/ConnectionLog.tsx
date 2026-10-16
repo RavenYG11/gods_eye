@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatWaktuWIB, type LogEntry, type LogLevel } from "../lib/log";
+import type { StreamStatus } from "../lib/streamHealth";
 
 const DOT_CLASS: Record<LogLevel, string> = {
   info: "lg-info",
@@ -24,6 +25,13 @@ const LEVEL_LABEL: Record<LogLevel, string> = {
 interface Props {
   entries: LogEntry[];
   /**
+   * #71: ringkasan delay dari live edge — PINDAHAN dari strip kuning di
+   * bawah video (#delayStrip, dihapus atas permintaan Rama). Tampil sebagai
+   * baris ringkasan di panel ini.
+   */
+  delaySec: number;
+  status: StreamStatus;
+  /**
    * #70.4: unduh log playback (telemetri #68) — tombol di header panel,
    * di samping "Bersihkan". Sebelumnya tombol hanya ada di dalam popover
    * metrik (di balik klik badge) sehingga Rama tidak menemukannya.
@@ -31,7 +39,7 @@ interface Props {
   onDownloadLog?: () => void;
 }
 
-export function ConnectionLog({ entries, onDownloadLog }: Props) {
+export function ConnectionLog({ entries, delaySec, status, onDownloadLog }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
   // "Bersihkan" hanya menyembunyikan tampilan; engine tetap mencatat.
@@ -89,6 +97,21 @@ export function ConnectionLog({ entries, onDownloadLog }: Props) {
           )}
         </div>
       </div>
+      {/* #71: ringkasan delay — pindahan strip kuning bawah video. Jujur
+          soal keterlambatan yang disengaja (anti-buffering): player dijaga
+          ±45 dtk di belakang live edge agar gambar tidak tersendat. */}
+      <p className="log-delay" aria-live="polite">
+        {status === "delay" ? (
+          <>
+            Tertinggal <strong>±{delaySec} dtk</strong> dari siaran langsung
+            (anti-buffering — disengaja, agar gambar tidak tersendat).
+          </>
+        ) : status === "live" ? (
+          <>Live edge tercapai (≤ 3 dtk) — stream tepat waktu.</>
+        ) : (
+          <>Info delay tampil di sini saat stream berjalan.</>
+        )}
+      </p>
       <div
         ref={scrollRef}
         className="log-body"
@@ -119,8 +142,8 @@ export function ConnectionLog({ entries, onDownloadLog }: Props) {
         )}
       </div>
       <p className="log-note">
-        Event nyata dari player — tanpa backend, riwayat hanya selama sesi
-        berjalan dan tidak disimpan.
+        Event nyata dari player — riwayat hanya selama sesi berjalan dan
+        tidak disimpan.
       </p>
     </section>
   );
