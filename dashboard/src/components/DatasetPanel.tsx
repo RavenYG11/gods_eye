@@ -1,24 +1,23 @@
-// #72 (16 Okt 2026, FINAL) — Card "Kelola Dataset" di kolom kanan,
-// DI BAWAH card "Deteksi kendaraan".
+// #74 (16 Okt 2026) — Card "Kelola Dataset" ditulis ulang atas keluhan Rama:
+// "abis ctrl+v kok ditampilin di frontend? kalo add banyak masa card panjang
+//  ke bawah?"
 //
-// Keputusan Rama (final): gambar disimpan di DATABASE SQLite backend
-// (node:sqlite bawaan Node, #73), BUKAN file. Panel ini memakai SATU-SATUNYA modul
-// frontend: ../lib/dataset.ts (GET metadata, GET /:id/image → objectURL,
-// POST, DELETE). Seed (source 'seed') tampil tapi TIDAK bisa dihapus
-// (backend menolak dengan 403).
+// Perubahan #74:
+//   - GRID THUMBNAIL DIHAPUS TOTAL. Tidak ada lagi render daftar gambar.
+//   - Ringkasan kompak: jumlah per label + waktu tambah terakhir.
+//   - Upload/paste/drag-drop tetap berfungsi; hasilnya hanya TOAST sukses
+//     singkat (auto-hilang), bukan daftar.
+//   - Daftar item = COLLAPSIBLE (<details>), default TERTUTUP, berisi baris
+//     kompak (id, label, ukuran, tanggal, tombol hapus) TANPA thumbnail.
+//   - Seed tetap tidak bisa dihapus (proteksi backend 403; tombol hapus
+//     disembunyikan untuk source 'seed').
 //
-// Dua cara tambah sampel: (1) upload file (multiple, accept="image/*");
-// (2) paste gambar (klik area paste lalu Ctrl+V — juga menangkap event
-// paste dokumen selama fokus ada di dalam panel; bonus drag-and-drop).
-// Setiap gambar wajib berlabel "mobil"/"motor" (default "mobil").
+// Penyimpanan tetap: database SQLite backend via ../lib/dataset.ts (#72/#73).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteDatasetImage,
-  getDatasetImageUrl,
   listDataset,
-  revokeAllDatasetImageUrls,
-  revokeDatasetImageUrl,
   uploadDatasetImage,
   type DatasetImage,
   type DatasetLabel,
@@ -26,26 +25,58 @@ import {
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB — selaras backend
 const LABELS: DatasetLabel[] = ["mobil", "motor"];
+const TOAST_MS = 4000;
 
-interface Msg {
+interface Toast {
   kind: "ok" | "err";
   text: string;
+  key: number;
+}
+
+function formatTanggal(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat("id-ID", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function formatUkuran(bytes: number): string {
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
 export function DatasetPanel() {
   const [items, setItems] = useState<DatasetImage[]>([]);
   const [counts, setCounts] = useState({ mobil: 0, motor: 0 });
-  const [urls, setUrls] = useState<ReadonlyMap<number, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [label, setLabel] = useState<DatasetLabel>("mobil");
   const [busy, setBusy] = useState(0);
-  const [msg, setMsg] = useState<Msg | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [broken, setBroken] = useState<ReadonlySet<number>>(new Set());
   const panelRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const urlsRef = useRef(urls);
-  urlsRef.current = urls;
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = useCallback((kind: "ok" | "err", text: string) => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    setToast({ kind, text, key: Date.now() });
+    toastTimer.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimer.current = null;
+    }, TOAST_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    },
+    [],
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -53,49 +84,34 @@ export function DatasetPanel() {
       setItems(list.items);
       setCounts(list.counts);
     } catch (err) {
-      setMsg({ kind: "err", text: err instanceof Error ? err.message : "gagal memuat dataset" });
+      showToast(
+        "err",
+        err instanceof Error ? err.message : "gagal memuat dataset",
+      );
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     void refresh();
-    return () => revokeAllDatasetImageUrls();
   }, [refresh]);
 
-  // Muat objectURL thumbnail untuk item yang belum punya (lazy, cache di modul).
-  useEffect(() => {
-    let cancelled = false;
-    const missing = items.filter((it) => !urlsRef.current.has(it.id));
-    if (missing.length === 0) return;
-    void (async () => {
-      const next = new Map(urlsRef.current);
-      for (const it of missing) {
-        try {
-          next.set(it.id, await getDatasetImageUrl(it.id));
-        } catch {
-          setBroken((prev) => new Set(prev).add(it.id));
-        }
-        if (cancelled) return;
-      }
-      setUrls(next);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [items]);
+  /** Waktu tambah terakhir (dari createdAt terbaru) — ringkasan kompak. */
+  const lastAdded =
+    items.length > 0
+      ? items.reduce((a, b) => (a.createdAt > b.createdAt ? a : b)).createdAt
+      : null;
 
   /** Kirim sekumpulan File gambar dengan label & sumber tertentu. */
   const submitFiles = useCallback(
     async (files: Iterable<File>, source: "upload" | "paste") => {
       const list = [...files].filter((f) => f.type.startsWith("image/"));
       if (list.length === 0) {
-        setMsg({ kind: "err", text: "tidak ada file gambar yang valid" });
+        showToast("err", "tidak ada file gambar yang valid");
         return;
       }
       setBusy((b) => b + list.length);
-      setMsg(null);
       let okCount = 0;
       const errors: string[] = [];
       for (const file of list) {
@@ -107,23 +123,28 @@ export function DatasetPanel() {
           await uploadDatasetImage(file, label, source);
           okCount++;
         } catch (err) {
-          errors.push(`${file.name}: ${err instanceof Error ? err.message : "gagal"}`);
+          errors.push(
+            `${file.name}: ${err instanceof Error ? err.message : "gagal"}`,
+          );
         } finally {
           setBusy((b) => b - 1);
         }
       }
       await refresh();
+      // #74: hasil upload/paste = TOAST singkat saja, tidak me-render daftar.
       if (okCount > 0) {
-        setMsg({
-          kind: "ok",
-          text: `${okCount} gambar tersimpan di database (label: ${label}, via ${source === "paste" ? "paste" : "upload"})`,
-        });
+        showToast(
+          "ok",
+          `${okCount} gambar tersimpan (label: ${label}, via ${
+            source === "paste" ? "paste" : "upload"
+          })`,
+        );
       }
       if (errors.length > 0) {
-        setMsg({ kind: "err", text: errors.slice(0, 3).join(" · ") });
+        showToast("err", errors.slice(0, 3).join(" · "));
       }
     },
-    [label, refresh],
+    [label, refresh, showToast],
   );
 
   /** Ambil gambar dari clipboard (paste). */
@@ -167,32 +188,40 @@ export function DatasetPanel() {
       ) {
         return;
       }
-      setMsg(null);
       try {
         await deleteDatasetImage(item.id);
-        revokeDatasetImageUrl(item.id);
-        setUrls((prev) => {
-          const next = new Map(prev);
-          next.delete(item.id);
-          return next;
-        });
         await refresh();
-        setMsg({ kind: "ok", text: `sampel #${item.id} dihapus` });
+        showToast("ok", `sampel #${item.id} dihapus`);
       } catch (err) {
-        setMsg({ kind: "err", text: err instanceof Error ? err.message : "gagal menghapus" });
+        showToast(
+          "err",
+          err instanceof Error ? err.message : "gagal menghapus",
+        );
       }
     },
-    [refresh],
+    [refresh, showToast],
   );
 
   return (
-    <aside className="dataset-panel" aria-label="Panel kelola dataset" ref={panelRef}>
+    <aside
+      className="dataset-panel"
+      aria-label="Panel kelola dataset"
+      ref={panelRef}
+    >
       <div className="ds-head">
         <h2>Kelola Dataset</h2>
       </div>
 
+      {/* #74: ringkasan KOMPAK — jumlah per label + waktu tambah terakhir.
+          Tidak ada lagi grid thumbnail. */}
       <p className="ds-summary" aria-live="polite">
         mobil: {counts.mobil} · motor: {counts.motor}
+        {lastAdded && (
+          <span className="ds-last">
+            {" "}
+            · terakhir: {formatTanggal(lastAdded)}
+          </span>
+        )}
       </p>
 
       {/* Pemilih label — berlaku untuk upload & paste berikutnya. */}
@@ -248,57 +277,74 @@ export function DatasetPanel() {
         onDrop={(e) => {
           e.preventDefault();
           setDragOver(false);
-          if (e.dataTransfer.files.length > 0) void submitFiles(e.dataTransfer.files, "upload");
+          if (e.dataTransfer.files.length > 0)
+            void submitFiles(e.dataTransfer.files, "upload");
         }}
       >
         Klik di sini lalu <kbd>Ctrl</kbd>+<kbd>V</kbd> untuk paste screenshot
-        <span className="ds-paste-sub">png / jpg / webp · maks 5 MB per file</span>
+        <span className="ds-paste-sub">
+          png / jpg / webp · maks 5 MB per file
+        </span>
       </div>
 
-      {msg && (
-        <p className={`ds-msg ds-msg-${msg.kind}`} role={msg.kind === "err" ? "alert" : "status"}>
-          {msg.text}
-        </p>
-      )}
-
-      {loading ? (
-        <p className="ds-note">Memuat dataset…</p>
-      ) : items.length === 0 ? (
-        <p className="ds-note">Belum ada sampel. Upload atau paste gambar pertama.</p>
-      ) : (
-        <div className="ds-grid" aria-label="Daftar sampel dataset">
-          {items.map((item) => {
-            const src = urls.get(item.id);
-            const isSeed = item.source === "seed";
-            return (
-              <figure className="ds-thumb" key={item.id} title={`#${item.id} · ${(item.size / 1024).toFixed(1)} KB`}>
-                {broken.has(item.id) || !src ? (
-                  <span className="ds-broken">#{item.id}</span>
-                ) : (
-                  <img src={src} alt={`${item.label} — sampel #${item.id}`} loading="lazy" />
-                )}
-                <span className={`ds-badge${isSeed ? " seed" : ""}`}>{item.label}</span>
-                {!isSeed && (
-                  <button
-                    type="button"
-                    className="ds-del"
-                    aria-label={`Hapus sampel #${item.id}`}
-                    title="Hapus dari dataset"
-                    onClick={() => void handleDelete(item)}
-                  >
-                    ×
-                  </button>
-                )}
-              </figure>
-            );
-          })}
+      {/* #74: TOAST — melayang singkat, auto-hilang 4 dtk. */}
+      {toast && (
+        <div
+          key={toast.key}
+          className={`ds-toast ds-toast-${toast.kind}`}
+          role={toast.kind === "err" ? "alert" : "status"}
+        >
+          {toast.text}
         </div>
       )}
 
+      {/* #74: daftar item COLLAPSIBLE, default TERTUTUP — baris kompak
+          TANPA thumbnail (id, label, ukuran, tanggal, hapus). */}
+      {!loading && items.length > 0 && (
+        <details className="ds-list">
+          <summary>
+            Daftar sampel ({items.length})
+            <span className="ds-list-hint">klik untuk buka/tutup</span>
+          </summary>
+          <ul>
+            {items.map((item) => {
+              const isSeed = item.source === "seed";
+              return (
+                <li key={item.id} className="ds-row">
+                  <span className="ds-row-id">#{item.id}</span>
+                  <span className={`ds-row-label${isSeed ? " seed" : ""}`}>
+                    {item.label}
+                    {isSeed ? " · seed" : ""}
+                  </span>
+                  <span className="ds-row-meta">
+                    {formatUkuran(item.size)} · {formatTanggal(item.createdAt)}
+                  </span>
+                  {!isSeed && (
+                    <button
+                      type="button"
+                      className="ds-row-del"
+                      aria-label={`Hapus sampel #${item.id}`}
+                      title="Hapus dari dataset"
+                      onClick={() => void handleDelete(item)}
+                    >
+                      Hapus
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      )}
+      {loading && <p className="ds-note">Memuat dataset…</p>}
+      {!loading && items.length === 0 && (
+        <p className="ds-note">Belum ada sampel. Upload atau paste gambar pertama.</p>
+      )}
+
       <p className="ds-hint">
-        Gambar tersimpan di <span className="mono">database SQLite</span> backend
-        (<span className="mono">backend/data/dataset.db</span>, tidak di-commit).
-        Sampel seed (badge hijau) tidak bisa dihapus dari panel.
+        Gambar tersimpan di <span className="mono">database SQLite</span>{" "}
+        backend (<span className="mono">backend/data/dataset.db</span>, tidak
+        di-commit). Sampel seed tidak bisa dihapus.
       </p>
     </aside>
   );

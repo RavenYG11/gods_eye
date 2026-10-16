@@ -65,9 +65,12 @@ Panel **"Kelola Dataset"** di dashboard (kolom kanan, bawah card
    juga mendukung drag-and-drop file ke area yang sama).
 3. **Label:** pilih `mobil`/`motor` dulu (default `mobil`) — berlaku untuk
    gambar berikutnya yang diupload/dipaste.
-4. **Hapus:** tombol × di tiap thumbnail (konfirmasi dulu) — menghapus baris
-   dari database. Sampel **seed** (badge hijau) tampil tapi TIDAK bisa dihapus
+4. **Hapus:** tombol "Hapus" di tiap baris daftar collapsible (konfirmasi dulu) —
+   menghapus baris dari database. Sampel **seed** tampil tapi TIDAK bisa dihapus
    dari panel maupun API (backend menolak dengan `403`).
+5. **Daftar (#74):** thumbnail DIHAPUS — daftar item = collapsible default-tertutup
+   (baris kompak: id, label, ukuran, tanggal, tombol Hapus); upload/paste hanya
+   memunculkan toast singkat, tidak me-render daftar.
 
 **Validasi (frontend + backend):** hanya png/jpg/webp, maks 5 MB per file,
 duplikat ditolak (cek hash SHA-256 isi file → `409`).
@@ -80,7 +83,7 @@ duplikat ditolak (cek hash SHA-256 isi file → `409`).
 | Modul DB | `backend/lib/dataset-db.js` | Skema `dataset_images(id, label, mime, data, sha256 UNIQUE, source, created_at)`; `openDatasetDb`, `seedIfEmpty`, `addImage` (lempar `DUPLICATE`), `listImages` (metadata TANPA blob), `getImage`, `deleteImage`. |
 | Endpoint | `backend/server.js` | Lihat tabel API di bawah. DB dibuat otomatis di `backend/data/dataset.db` (**di-gitignore** — jangan di-commit). |
 | Modul frontend | `dashboard/src/lib/dataset.ts` | **Satu-satunya** jalur akses dataset: `listDataset()`, `getDatasetImageUrl(id)` (fetch blob → objectURL, cache + revoke), `uploadDatasetImage(file\|{dataUrl}, label, source)`, `deleteDatasetImage(id)`. |
-| UI | `dashboard/src/components/DatasetPanel.tsx` | Card kolom kanan; thumbnail lazy-load via objectURL (revoke saat unmount/hapus). |
+| UI | `dashboard/src/components/DatasetPanel.tsx` | Card kolom kanan (#74: tanpa thumbnail — ringkasan kompak + toast + daftar collapsible). |
 
 **API backend:**
 
@@ -90,6 +93,7 @@ duplikat ditolak (cek hash SHA-256 isi file → `409`).
 | `POST` | `/api/dataset` | `{label, source, dataUrl}` (`source`: `upload`/`paste`) | `201 {ok, id}` |
 | `GET` | `/api/dataset/:id/image` | — | biner gambar (`Content-Type` asli) |
 | `DELETE` | `/api/dataset/:id` | — | `{ok, removed}` (`403` untuk seed, `404` bila tak ada) |
+| `GET` | `/api/dataset/export` | — | File `.zip` format YOLO (`images/train\|val/`, `labels/train\|val/`, `dataset.yaml`) — untuk training (#74). Label = pseudo-box full-frame (bootstrap; batas jujur di `docs/training.md`). Split train/val 80/20 deterministik. |
 
 **Seed-on-first-run:** saat backend pertama kali jalan dan tabel kosong,
 `motor-1.png` & `mobil-1.png` diimpor otomatis dari `dashboard/public/dataset/`
@@ -111,12 +115,29 @@ Jangan pernah push file biner via konektor — selalu dari laptop.
 (Isi database `dataset.db` TIDAK di-commit — dibuat ulang otomatis + seed
 saat backend pertama jalan.)
 
-## Rencana tindak lanjut (terbuka)
+## Training dari dataset (#74, 16 Okt 2026 — pipeline v1 ADA)
 
 Rama menanyakan (15 Okt 2026, riset #48): "apakah 1 screenshot crop per
 kelas kendaraan dari CCTV bisa membantu akurasi?" — jawaban jujur: crop
-tersebut kini tersimpan sebagai seed di sini. Untuk benar-benar menaikkan
-akurasi, opsi yang realistis: (a) kumpulkan 50–200 crop per kelas dari
-rekaman stream; (b) evaluasi model kandidat terhadap crop tersebut sebagai
-benchmark mini; (c) bila perlu, fine-tune dengan anotasi. Belum ada
-keputusan Rama untuk langkah (a)–(c).
+tersebut kini tersimpan sebagai seed di sini, DAN pipeline training v1
+sudah dibangun (#74):
+
+1. **Export:** `GET /api/dataset/export` → ZIP format YOLO
+   (`images/train|val/`, `labels/train|val/`, `dataset.yaml`; writer
+   pure-Node `backend/lib/zip.js`, tanpa dependency baru).
+2. **Train:** `tools/train_yolo.py --data dataset.zip --epochs 50`
+   (Ultralytics; `--help`/`--dry-run` jalan tanpa torch).
+3. **Pasang:** salin `best.onnx` ke `dashboard/public/models/` →
+   `VITE_DETECTOR_MODEL=models/<nama>.onnx npm run build`.
+
+**Batas bootstrap (jujur):** label export = pseudo-box full-frame
+(`<classId> 0.5 0.5 1.0 1.0`) karena sampel hanya berlabel image-level.
+Untuk akurasi serius: anotasi bbox manual + 50–200+ sampel/kelas.
+Rincian lengkap: `docs/training.md`.
+
+## Rencana tindak lanjut (terbuka)
+
+- Kumpulkan 50–200 crop per kelas dari rekaman stream (via panel) —
+  syarat training beneran (lihat atas).
+- Evaluasi model kandidat terhadap crop sebagai benchmark mini (opsi
+  riset #48 (b) — belum diputuskan Rama).

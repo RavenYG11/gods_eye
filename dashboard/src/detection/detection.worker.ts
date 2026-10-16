@@ -9,8 +9,8 @@
 // sudah ada di lib DOM, jadi tidak butuh lib tambahan.
 
 import { OnnxVehicleDetector } from "./onnxDetector";
-import { CentroidTracker } from "./tracker";
-import { COCO_TO_VEHICLE } from "./vehicleConfig";
+import { ByteTracker } from "./tracker";
+import { COCO_TO_VEHICLE, DETECTOR_PARSE_FLOOR } from "./vehicleConfig";
 import type { WorkerRequest, WorkerResponse } from "./workerProtocol";
 
 interface WorkerSelf {
@@ -21,7 +21,8 @@ interface WorkerSelf {
 const workerSelf = self as unknown as WorkerSelf;
 
 const detector = new OnnxVehicleDetector();
-const tracker = new CentroidTracker();
+// #74: CentroidTracker DIGANTI ByteTracker (Kalman + asosiasi IoU dua tahap).
+const tracker = new ByteTracker();
 let ready = false;
 let busy = false;
 
@@ -36,9 +37,11 @@ workerSelf.onmessage = (e: MessageEvent<WorkerRequest>) => {
     return;
   }
   if (msg.type === "set-threshold") {
-    // #65: slider threshold UI — berlaku untuk inferensi berikutnya.
-    // Aman sebelum init (detector sudah ada, hanya menyimpan nilai).
-    detector.setThreshold(msg.threshold);
+    // #74: pesan "set-threshold" dari slider UI kini mengatur ambang TAHAP-1
+    // ByteTrack (deteksi "tinggi"), BUKAN threshold parser model. Parser
+    // model dikunci di DETECTOR_PARSE_FLOOR (lihat handleInit) agar tahap-2
+    // selalu punya deteksi low-confidence untuk re-identifikasi.
+    tracker.setHighThreshold(msg.threshold);
     return;
   }
   if (msg.type === "detect") {
@@ -67,6 +70,10 @@ async function handleInit(
   tracker.reset();
   const labels = Object.values(COCO_TO_VEHICLE);
   try {
+    // #74: kunci parser model di lantai rendah — ByteTrack tahap-2 butuh
+    // deteksi low-confidence (re-identifikasi). Ambang "tinggi" diatur
+    // terpisah di tracker via pesan "set-threshold".
+    detector.setThreshold(DETECTOR_PARSE_FLOOR);
     await detector.initWithWasm({ modelUrl, labels }, wasmBase);
     ready = true;
     // #68: sertakan execution provider terpilih (webgl|wasm) untuk chip UI.

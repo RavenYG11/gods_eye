@@ -27,7 +27,9 @@ import {
 type OrtModule = typeof import("onnxruntime-web");
 
 const WARMUP_NOTE =
-  "warmup gagal — file model mungkin korup atau bukan YOLO26n";
+  "warmup gagal — file model mungkin korup atau bukan YOLO26n " +
+  "(bila memakai VITE_DETECTOR_MODEL: model custom WAJIB hasil export " +
+  "ultralytics YOLO26n dengan output [1,300,6])";
 
 export class OnnxVehicleDetector implements Detector {
   private ort: OrtModule | null = null;

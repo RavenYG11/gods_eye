@@ -33,6 +33,7 @@ import {
   openDatasetDb,
   seedIfEmpty,
 } from "./lib/dataset-db.js";
+import { createZip } from "./lib/zip.js";
 
 // ---------------------------------------------------------------------------
 // Konfigurasi (bisa dioverride via environment variable)
@@ -192,6 +193,86 @@ app.get("/api/dataset/:id/image", (req, res) => {
   } catch (err) {
     console.error("[gods-eye] dataset image gagal:", err.message);
     res.status(500).json({ ok: false, error: "gagal membaca gambar" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #74 (16 Okt 2026) — EXPORT DATASET untuk training (pipeline v1).
+//   GET /api/dataset/export → file .zip format YOLO:
+//     images/train/<id>.<ext>  images/val/<id>.<ext>
+//     labels/train/<id>.txt    labels/val/<id>.txt   (YOLO txt per gambar)
+//     dataset.yaml              (train/val/nc/names — siap untuk ultralytics)
+//
+// JUJUR (batas bootstrap): sampel dataset GODS EYE berlabel IMAGE-LEVEL
+// (satu label per gambar, tanpa bounding box). Label YOLO yang ditulis =
+// pseudo-box FULL-FRAME "<classId> 0.5 0.5 1.0 1.0" — seluruh gambar
+// dianggap objek. Ini titik awal (bootstrap), BUKAN anotasi presisi:
+// model yang dilatih darinya belajar "seluruh frame = kendaraan".
+// Untuk akurasi serius, ganti pseudo-box dengan anotasi bbox manual
+// (lihat docs/training.md). Batas ini juga ditulis di dataset.yaml.
+//
+// Split train/val 80/20 deterministik (urut id). ZIP dibuat pure-Node
+// (backend/lib/zip.js, metode store, tanpa dependency baru).
+// ---------------------------------------------------------------------------
+const EXPORT_CLASS_ID = { mobil: 0, motor: 1 }; // selaras dataset.yaml names
+const EXPORT_EXT = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
+
+app.get("/api/dataset/export", (_req, res) => {
+  try {
+    const items = listImages();
+    if (items.length === 0) {
+      return res.status(404).json({ ok: false, error: "dataset kosong — tambah sampel dulu via panel Kelola Dataset" });
+    }
+    const files = [];
+    const counts = { train: 0, val: 0 };    items.forEach((it, idx) => {
+      const row = getImage(it.id);
+      if (!row) return; // lomba hapus saat export — lewati
+      const split = idx % 5 === 4 ? "val" : "train"; // 80/20 deterministik
+      counts[split]++;
+      const ext = EXPORT_EXT[row.mime] ?? "png";
+      const classId = EXPORT_CLASS_ID[row.label] ?? 0;
+      files.push({ name: `images/${split}/${row.id}.${ext}`, data: row.data });
+      // pseudo-box full-frame (bootstrap) — lihat komentar batas di atas
+      files.push({
+        name: `labels/${split}/${row.id}.txt`,
+        data: `${classId} 0.5 0.5 1.0 1.0\n`,
+      });
+    });
+    // #74b — pastikan direktori val selalu ada di ZIP (entri direktori kosong),
+    // agar dataset.yaml tetap valid meski dataset kecil (split 80/20 bisa
+    // menghasilkan val kosong; ultralytics butuh path val ada).
+    if (counts.val === 0) {
+      files.push({ name: "images/val/", data: "" });
+      files.push({ name: "labels/val/", data: "" });
+    }
+    const yaml =
+      `# GODS EYE dataset export — format YOLO (Ultralytics)\n` +
+      `# Dibuat otomatis oleh GET /api/dataset/export.\n` +
+      `# BATAS BOOTSTRAP (jujur): label = pseudo-box full-frame\n` +
+      `# "<classId> 0.5 0.5 1.0 1.0" karena sampel hanya berlabel image-level\n` +
+      `# (tanpa bounding box). Untuk akurasi serius, ganti dengan anotasi\n` +
+      `# bbox manual — lihat docs/training.md.\n` +
+      `train: images/train\n` +
+      `val: images/val\n` +
+      `nc: 2\n` +
+      `names: ['mobil', 'motor']\n`;
+    files.push({ name: "dataset.yaml", data: yaml });
+    const zip = createZip(files);
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+    console.log(
+      `[gods-eye] dataset: export ${items.length} sampel ` +
+        `(train ${counts.train}, val ${counts.val}) → ZIP ${(zip.length / 1024).toFixed(0)} KB`,
+    );
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="gods-eye-dataset-${stamp}.zip"`,
+    );
+    res.setHeader("Content-Length", String(zip.length));
+    res.send(zip);
+  } catch (err) {
+    console.error("[gods-eye] dataset export gagal:", err.message);
+    res.status(500).json({ ok: false, error: "gagal mengekspor dataset" });
   }
 });
 

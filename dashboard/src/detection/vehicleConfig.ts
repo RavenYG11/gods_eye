@@ -77,8 +77,26 @@ export const DIRECTION_COLORS = {
   unknown: "#94a3b8", // abu-abu = arah belum pasti
 } as const;
 
+/**
+ * #74 — LANTAI PARSE DETECTOR (0,15). ByteTrack butuh deteksi confidence
+ * RENDAH untuk tahap-2 (re-identifikasi saat oklusi): model mem-parse semua
+ * ≥ lantai ini, tracker yang membagi "tinggi" (≥ ambang UI/slider) vs
+ * "rendah". Di bawah 0,15 = noise model, tidak pernah dipakai.
+ * Diset sekali di worker saat init; slider UI mengatur ambang TINGGI
+ * tracker via pesan "set-threshold" (bukan lagi threshold parser).
+ */
+export const DETECTOR_PARSE_FLOOR = 0.15;
+
 /** URL model & wasm dihitung dari base dokumen agar tahan base './'. */
 export function modelUrl(base: string): string {
+  // #74 (item 4c): model hasil training sendiri — via env build
+  // VITE_DETECTOR_MODEL (path relatif ke base, mis. "models/gods-eye-custom.onnx").
+  // Bila diset, dipakai sebagai pengganti yolo26n.onnx bawaan; bila tidak,
+  // default tetap model bawaan. Warmup onnxDetector tetap memvalidasi
+  // format output [1,300,6] → model non-YOLO26n ditolak dengan pesan jelas.
+  const custom = (import.meta.env?.VITE_DETECTOR_MODEL as string | undefined)
+    ?.trim();
+  if (custom) return new URL(custom, base).href;
   return new URL("models/yolo26n.onnx", base).href;
 }
 

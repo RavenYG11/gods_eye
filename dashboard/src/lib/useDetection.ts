@@ -23,7 +23,7 @@ export interface DetectionState {
   /**
    * #62: hasil dari WORKER = TrackedDetection (trackId + direction + stale),
    * BUKAN raw detection. Kontrak Detector tetap Detection[] — cast aman di
-   * sini karena worker selalu mengembalikan keluaran CentroidTracker.
+   * sini karena worker selalu mengembalikan keluaran ByteTracker (#74).
    */
   detections: TrackedDetection[];
   /** fps deteksi aktual (hasil inferensi per detik, bukan fps video). */

@@ -7,6 +7,7 @@
 // — antrean = latensi menumpuk = overlay makin tertinggal dari video.
 
 import type { Detection, DetectionFrame, Detector } from "./types";
+import type { TrackedDetection } from "./tracker";
 import type { WorkerRequest, WorkerResponse } from "./workerProtocol";
 import { CAPTURE_RESIZE_HEIGHT, CAPTURE_RESIZE_WIDTH } from "./vehicleConfig";
 
@@ -149,6 +150,11 @@ export class WorkerVehicleDetector implements Detector {
         bitmap = await createImageBitmap(frame);
       }
       this.inflight = true;
+      // #74: dimensi bitmap DIBEKUKAN di sini — setelah postMessage + transfer,
+      // bitmap di-neuter (tidak bisa dibaca lagi), padahal dibutuhkan untuk
+      // skala ruang koordinat di bawah.
+      const bmpW = bitmap.width;
+      const bmpH = bitmap.height;
       const result = await new Promise<DetectionFrame>((resolve) => {
         // Pengaman: worker tak membalas dalam TIMEOUT_MS → anggap macet.
         // #68: JANGAN hitung sebagai hasil (lastTimedOut) — hook akan
@@ -184,6 +190,29 @@ export class WorkerVehicleDetector implements Detector {
       // (bukan hasil inferensi nyata).
       this.lastInferMs =
         this.lastTimedOut || this.lastSkipped ? null : (result.inferMs ?? null);
+      // #74 — PERBAIKAN RUANG KOORDINAT (akar "box tidak ngelock", diagnosis
+      // #74): sejak #68 frame ditangkap 960×540, bbox + velocity keluar worker
+      // dalam piksel RUANG BITMAP, tetapi DetectionOverlay menggambar dengan
+      // skala canvas/videoWidth (ruang video, mis. 1920×1080) → box setengah
+      // ukuran & bergeser ke kiri-atas. Tracker tetap bekerja di ruang bitmap
+      // (konsisten internal); yang diskala ke ruang video hanya OUTPUT ke
+      // overlay. Pada fallback capture-penuh (bitmap = ukuran video),
+      // kx = ky = 1 → no-op, aman.
+      if (!this.lastTimedOut && !this.lastSkipped && result.detections.length > 0) {
+        const kx = frame.videoWidth / bmpW;
+        const ky = frame.videoHeight / bmpH;
+        if (Number.isFinite(kx) && Number.isFinite(ky) && kx > 0 && ky > 0) {
+          for (const d of result.detections) {
+            const t = d as TrackedDetection;
+            const [x, y, w, h] = t.bbox;
+            t.bbox = [x * kx, y * ky, w * kx, h * ky];
+            if (typeof t.vx === "number") {
+              t.vx *= kx;
+              t.vy *= ky;
+            }
+          }
+        }
+      }
       return result.detections;
     } catch {
       return [];
