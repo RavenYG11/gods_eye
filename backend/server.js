@@ -25,6 +25,14 @@ import https from "node:https";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  addImage,
+  deleteImage,
+  getImage,
+  listImages,
+  openDatasetDb,
+  seedIfEmpty,
+} from "./lib/dataset-db.js";
 
 // ---------------------------------------------------------------------------
 // Konfigurasi (bisa dioverride via environment variable)
@@ -87,6 +95,121 @@ app.get("/api/health", (_req, res) => {
     upstream: UPSTREAM,
     frontendBuilt: existsSync(path.join(DIST_DIR, "index.html")),
   });
+});
+
+// ---------------------------------------------------------------------------
+// #72 (16 Okt 2026, FINAL — keputusan Rama: gambar disimpan di DATABASE
+// SQLite, BUKAN file).
+//   POST   /api/dataset            → tambah 1 sampel {label, source, dataUrl}
+//   GET    /api/dataset            → {ok, items, counts} (metadata TANPA blob)
+//   GET    /api/dataset/:id/image  → biner gambar (Content-Type asli)
+//   DELETE /api/dataset/:id        → hapus 1 sampel (seed dilindungi)
+// DB: backend/data/dataset.db (di-gitignore; dibuat otomatis). Seed-on-first-run
+// mengimpor motor-1.png & mobil-1.png dari public/dataset/ bila tabel kosong.
+// BLOB maks 5 MB, duplikat (sha256) → 409. Tidak menyentuh proxy /cctv/*.
+// ---------------------------------------------------------------------------
+const MAX_DATASET_BYTES = 5 * 1024 * 1024; // 5 MB per gambar
+const DATASET_MIME_RE = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/;
+const DATASET_LABELS = new Set(["mobil", "motor"]);
+const DATASET_SOURCES = new Set(["upload", "paste"]);
+
+/** Validasi + decode dataUrl → {mime, bytes}. Lempar Error bila tak valid. */
+function decodeDatasetDataUrl(dataUrl) {
+  if (typeof dataUrl !== "string") throw new Error("dataUrl wajib string base64 data URL");
+  const m = DATASET_MIME_RE.exec(dataUrl.trim());
+  if (!m) throw new Error("dataUrl bukan gambar valid (hanya png/jpg/webp base64)");
+  const bytes = Buffer.from(m[2].replace(/\s+/g, ""), "base64");
+  if (bytes.length === 0) throw new Error("dataUrl kosong / base64 tidak valid");
+  if (bytes.length > MAX_DATASET_BYTES) {
+    throw new Error(
+      `ukuran ${(bytes.length / 1048576).toFixed(1)} MB melebihi batas 5 MB per file`,
+    );
+  }
+  return { mime: m[1], bytes };
+}
+
+const DATASET_DB_PATH = path.resolve(__dirname, "data", "dataset.db");
+openDatasetDb(DATASET_DB_PATH);
+// Seed dari public/dataset/ (dev) atau dist/dataset/ (production build).
+const seeded = seedIfEmpty([
+  path.join(DIST_DIR, "dataset"),
+  path.resolve(__dirname, "..", "dashboard", "public", "dataset"),
+]);
+if (seeded > 0) console.log(`[gods-eye] dataset: seed ${seeded} sampel awal dari PNG`);
+
+// Body JSON sampai ±12 MB hanya untuk /api/dataset (5 MB gambar → ±6,7 MB base64).
+app.use("/api/dataset", express.json({ limit: "12mb" }));
+
+app.get("/api/dataset", (_req, res) => {
+  try {
+    const items = listImages();
+    const counts = { mobil: 0, motor: 0 };
+    for (const it of items) counts[it.label] = (counts[it.label] ?? 0) + 1;
+    res.json({ ok: true, items, counts });
+  } catch (err) {
+    console.error("[gods-eye] dataset GET gagal:", err.message);
+    res.status(500).json({ ok: false, error: "gagal membaca dataset" });
+  }
+});
+
+app.post("/api/dataset", (req, res) => {
+  try {
+    const { label, source, dataUrl } = req.body ?? {};
+    if (!DATASET_LABELS.has(label)) {
+      return res.status(400).json({ ok: false, error: 'label wajib "mobil" atau "motor"' });
+    }
+    if (!DATASET_SOURCES.has(source)) {
+      return res.status(400).json({ ok: false, error: 'source wajib "upload" atau "paste"' });
+    }
+    const { mime, bytes } = decodeDatasetDataUrl(dataUrl);
+    const { id } = addImage({ label, mime, data: bytes, source });
+    console.log(`[gods-eye] dataset: + id=${id} (${label}, ${source})`);
+    res.status(201).json({ ok: true, id });
+  } catch (err) {
+    if (err?.message === "DUPLICATE") {
+      return res.status(409).json({ ok: false, error: "duplikat: gambar ini sudah ada di dataset" });
+    }
+    console.error("[gods-eye] dataset POST gagal:", err.message);
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/dataset/:id/image", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ ok: false, error: "id tidak valid" });
+  }
+  try {
+    const row = getImage(id);
+    if (!row) return res.status(404).json({ ok: false, error: "gambar tidak ditemukan" });
+    res.setHeader("Content-Type", row.mime);
+    res.setHeader("Content-Length", String(row.data.length));
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.send(row.data);
+  } catch (err) {
+    console.error("[gods-eye] dataset image gagal:", err.message);
+    res.status(500).json({ ok: false, error: "gagal membaca gambar" });
+  }
+});
+
+app.delete("/api/dataset/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ ok: false, error: "id tidak valid" });
+  }
+  try {
+    const row = getImage(id);
+    if (!row) return res.status(404).json({ ok: false, error: "gambar tidak ditemukan" });
+    if (row.source === "seed") {
+      return res.status(403).json({ ok: false, error: "sampel seed tidak bisa dihapus via API" });
+    }
+    deleteImage(id);
+    console.log(`[gods-eye] dataset: - id=${id}`);
+    res.json({ ok: true, removed: id });
+  } catch (err) {
+    console.error("[gods-eye] dataset DELETE gagal:", err.message);
+    res.status(500).json({ ok: false, error: "gagal menghapus gambar" });
+  }
 });
 
 // ---------------------------------------------------------------------------

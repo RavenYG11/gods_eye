@@ -23,6 +23,8 @@ Browser (laptop Rama, jaringan rumah)
 │  GET /            → file statis dashboard/dist (hasil npm run build)│
 │  GET /cctv/*      → REVERSE PROXY ──HTTPS──▶                       │
 │  GET /api/health  → { ok, upstream, frontendBuilt } (health check)  │
+│  /api/dataset     → Kelola Dataset (#72 FINAL: SQLite backend/data/     │
+│    dataset.db — POST/GET/DELETE/GET /:id/image; gambar = BLOB di DB)     │
 └────────────────────────────────────────────────────────────────────┘
                                               │
                                               ▼
@@ -184,6 +186,14 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 **Mode fullstack (backend, §4a) — jalur utama:**
 - [ ] `cd backend && npm start` → buka `http://localhost:3000` — halaman tampil tanpa error console.
 - [ ] `curl http://localhost:3000/api/health` → `{"ok":true,…,"frontendBuilt":true}`.
+- [ ] **Kelola Dataset (#72 FINAL — database):** card "Kelola Dataset" tampil di kolom
+      kanan (bawah "Deteksi kendaraan"); paste 1 screenshot (`Ctrl+V` di area paste,
+      label `motor`) → thumbnail muncul + ringkasan `motor: N` bertambah; `curl
+      http://localhost:3000/api/dataset` memuat metadata baru; hapus via tombol ×
+      → baris DB hilang. Gambar tersimpan sebagai BLOB di `backend/data/dataset.db`
+      (dibuat otomatis, di-gitignore). Seed PNG (`motor-1.png`, `mobil-1.png`) tetap
+      file di `dashboard/public/dataset/` — commit manual dari laptop
+      (`docs/dataset.md` — JANGAN via konektor).
 - [ ] Badge status berubah menjadi **● LIVE** dalam ±10 detik.
 - [ ] Panel **"Log koneksi"** (di bawah player, full-width) terisi event nyata, mis.
       `OK Terhubung — manifest dimuat (N level kualitas tersedia).`
@@ -281,6 +291,8 @@ hanya bisa memverifikasi lewat bundle nyata tanpa stream. Verifikasi berikut
 
 **Preflight backend tanpa stream (bisa dari VM):**
 - [ ] `GET /` → `200 text/html`; `GET /api/health` → `ok:true`; path acak → `200` (SPA fallback).
+- [ ] `GET /api/dataset` → `{"ok":true,"items":[…],"counts":{…}}`;
+      `GET /api/dataset/1/image` → `200 image/png` (biner = isi DB).
 
 ---
 
@@ -354,8 +366,10 @@ gods_eye/
 ├── README.md                 # Ringkasan + cara jalan cepat
 ├── .gitignore                # node_modules/, dist/, bobot model (*.onnx/*.pt/…)
 ├── backend/                  # ★ BACKEND (#59) — Node.js + Express
-│   ├── server.js             # Reverse proxy /cctv/* + serve dashboard/dist + /api/health
-│   ├── package.json          # express + http-proxy-middleware (tanpa node_modules/)
+│   ├── server.js             # Reverse proxy /cctv/* + serve dashboard/dist + /api/health + /api/dataset (#72 DB)
+│   ├── lib/dataset-db.js     # #72 FINAL: modul SQLite dataset (better-sqlite3) — skema, seed, CRUD
+│   ├── data/dataset.db       # (dibuat otomatis, DI-GITIGNORE — jangan di-commit)
+│   ├── package.json          # express + http-proxy-middleware + better-sqlite3
 │   └── README.md             # Cara jalan backend + env var + batasan
 ├── dashboard/                # App (React 18 + Vite + TS + hls.js) — TANPA node_modules/ & dist/
 │   ├── src/
