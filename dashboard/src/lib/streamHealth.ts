@@ -13,6 +13,7 @@
 import Hls, {
   type ErrorData,
   type LevelSwitchedData,
+  type LevelUpdatedData,
   type ManifestParsedData,
 } from "hls.js";
 import type { CameraConfig } from "../config/cameras";
@@ -103,6 +104,19 @@ const TELEMETRY_INTERVAL_MS = 2000;
 const TELEMETRY_MAX = 2000;
 
 /**
+ * #75: status info jendela DVR.
+ * - "loading"      = masih wajar menunggu (manifest baru dimuat).
+ * - "ready"        = jendela valid, bar/angka bisa dipakai.
+ * - "unavailable"  = JUJUR: >20 dtk setelah manifest dimuat info jendela
+ *                    tak kunjung ada (mis. HLS native / playlist tak lazim) —
+ *                    UI menampilkan pesan yang benar, bukan "menunggu…" abadi.
+ */
+export type DvrState = "loading" | "ready" | "unavailable";
+
+/** Batas "menunggu" info jendela DVR sebelum dinyatakan tak tersedia (ms). */
+const DVR_INFO_TIMEOUT_MS = 20_000;
+
+/**
  * #69 — INFO PLAYBACK TERKINI (bahan kontrol play/pause + tampilan waktu +
  * bar jendela DVR). Diperbarui tiap 1 dtk oleh tickDelay() — selalu nilai
  * TERBARU (bukan ring buffer seperti telemetri #68). Nilai −1 = tak tersedia
@@ -115,10 +129,29 @@ export interface PlaybackInfo {
   bufStart: number;
   /** buffered.end(terakhir) (dtk); −1 bila buffer kosong. */
   bufEnd: number;
-  /** hls.liveSyncPosition (dtk); −1 bila tak diketahui. */
+  /**
+   * hls.liveSyncPosition (dtk); −1 bila tak diketahui.
+   * #75: INI BUKAN live edge — melainkan posisi TARGET playback hls.js
+   * (≈ liveSyncDuration di belakang live edge, di-clamp ke jendela
+   * playlist). Dipakai chip waktu (LIVE/−N dtk) + penjaga DVR — JANGAN
+   * dipakai sebagai ujung kanan bar DVR (lihat windowEnd).
+   */
   edge: number;
-  /** Awal sliding window playlist (frags[0].start, dtk); −1 bila tak diketahui. */
+  /**
+   * #75: awal jendela DVR faktual (frags[0].start, dtk); −1 bila tak
+   * diketahui. Sumber utama = event LEVEL_UPDATED (bukan polling).
+   */
   windowStart: number;
+  /**
+   * #75: AKHIR jendela DVR faktual (akhir fragmen terakhir playlist, dtk);
+   * −1 bila tak diketahui. INI ujung kanan bar DVR yang benar — bukan
+   * liveSyncPosition (yang runtuh menjadi = windowStart sejak #71
+   * menaikkan liveSyncDuration 5→45 pada playlist berjendela pendek;
+   * itulah akar "menunggu info DVR…" abadi di build #74).
+   */
+  windowEnd: number;
+  /** #75: status info jendela DVR (loading/ready/unavailable). */
+  dvrState: DvrState;
 }
 
 /** Jadwal backoff antar percobaan reconnect (ms): 1→2→5→15→30 dtk. */
@@ -221,6 +254,8 @@ export class StreamHealth {
     bufEnd: -1,
     edge: -1,
     windowStart: -1,
+    windowEnd: -1,
+    dvrState: "loading",
   };
   private delaySec = 0;
   private attempt = 0; // 0 = belum ada percobaan; 1..5 saat reconnecting
@@ -251,6 +286,20 @@ export class StreamHealth {
   private prevFrames = 0;
   private prevFramesAt = 0;
   private nativeHls = false;
+  /**
+   * #75: jendela DVR FAKTUAL dari event LEVEL_UPDATED
+   * ({start: frags[0].start, end: akhir fragmen terakhir}). null = belum
+   * pernah diterima sesi ini. Menggantikan pola polling
+   * hls.levels[currentLevel].details yang rapuh (currentLevel = −1 sebelum
+   * frag pertama → windowStart −1; dan 'edge' bar tidak boleh dibaca dari
+   * liveSyncPosition — lihat komentar PlaybackInfo.windowEnd).
+   */
+  private dvrWindow: { start: number; end: number } | null = null;
+  /**
+   * #75: kapan manifest (atau metadata native) dimuat — patokan batas
+   * "menunggu" yang jujur (DVR_INFO_TIMEOUT_MS). 0 = belum dimuat sesi ini.
+   */
+  private manifestAt = 0;
 
   /**
    * Sinyal "player nunggu data" yang jujur: event 'waiting' milik <video>.
@@ -470,6 +519,9 @@ export class StreamHealth {
 
   detach(): void {
     this.clearAllTimers();
+    // #75: info jendela milik sesi hls yang dihancurkan — jangan bocor ke sesi berikut.
+    this.dvrWindow = null;
+    this.manifestAt = 0;
     if (this.hls) {
       this.hls.destroy();
       this.hls = null;
@@ -508,6 +560,11 @@ export class StreamHealth {
     if (!Hls.isSupported()) {
       if (video.canPlayType("application/vnd.apple.mpegurl")) {
         this.nativeHls = true;
+        // #75: info jendela DVR tak tersedia di jalur native — manifestAt
+        // tetap dipasang (dari 'loadedmetadata') agar batas "menunggu" yang
+        // jujur tetap jalan dan UI tidak "menunggu…" selamanya.
+        this.dvrWindow = null;
+        this.manifestAt = 0;
         this.pushLog(
           "warn",
           "Browser memakai HLS native — sebagian event detail tidak tersedia.",
@@ -523,6 +580,9 @@ export class StreamHealth {
     }
 
     this.nativeHls = false;
+    // #75: siklus baru = info jendela lama tidak berlaku lagi.
+    this.dvrWindow = null;
+    this.manifestAt = 0;
     const hls = new Hls({
       enableWorker: true,
       manifestLoadingMaxRetry: 2,
@@ -575,6 +635,8 @@ export class StreamHealth {
     hls.on(Hls.Events.MANIFEST_PARSED, (_e, data: ManifestParsedData) => {
       this.attempt = 0;
       this.mediaRecoverTried = false;
+      // #75: patokan "menunggu info DVR" yang jujur mulai di sini.
+      this.manifestAt = Date.now();
       const levels = data.levels?.length ?? 0;
       const wasReconnecting = this.status === "reconnecting";
       if (wasReconnecting) {
@@ -597,6 +659,37 @@ export class StreamHealth {
           "Autoplay ditahan browser — klik video untuk memutar manual.",
         );
       });
+    });
+
+    // #75: JENDELA DVR DARI EVENT (bukan polling). LEVEL_UPDATED membawa
+    // data.details = playlist level terkini — SATU-SATUNYA sumber faktual
+    // [windowStart, windowEnd]. Ini akar perbaikan butir 1+2+3:
+    //   SEBELUM: 'edge' bar dibaca dari hls.liveSyncPosition — BUKAN live
+    //   edge, melainkan posisi TARGET playback hls.js = clamp(liveEdge −
+    //   targetLatency, [edge−totalduration .. edge−targetduration])
+    //   (bukti: hls.js 1.7.3 LatencyController.get liveSyncPosition).
+    //   Sejak #71 menaikkan liveSyncDuration 5→45, pada playlist berjendela
+    //   pendek liveEdge−45 ≤ frags[0].start → hasil clamp = windowStart →
+    //   syarat UI (edge > windowStart) GAGAL SELAMANYA → "menunggu info
+    //   DVR…" abadi + slider mati + angka durasi hilang (regresi #71, baru
+    //   terlihat di #74 yang memunculkan teksnya).
+    //   SESUDAH: ujung kanan bar = AKHIR FRAGMEN TERAKHIR (faktual), syarat
+    //   windowEnd > windowStart terpenuhi selama playlist punya ≥1 fragmen —
+    //   tak lagi tergantung liveSyncDuration.
+    hls.on(Hls.Events.LEVEL_UPDATED, (_e, data: LevelUpdatedData) => {
+      const frags = data.details?.fragments;
+      if (!frags || frags.length === 0) return;
+      const first = frags[0].start;
+      const last = frags[frags.length - 1];
+      const end = last.start + (last.duration || 0);
+      if (
+        typeof first === "number" &&
+        Number.isFinite(first) &&
+        Number.isFinite(end) &&
+        end > first
+      ) {
+        this.dvrWindow = { start: first, end };
+      }
     });
 
     hls.on(Hls.Events.ERROR, (_e, data: ErrorData) => {
@@ -1066,6 +1159,13 @@ export class StreamHealth {
    * #69: baca posisi/buffer/edge/window terkini dari <video> + hls.js.
    * Dipanggil tiap 1 dtk oleh tickDelay(). UI me-render dari snapshot —
    * tidak ada pembacaan video langsung di komponen (konsisten §4).
+   *
+   * #75: jendela DVR dibaca dari STATE EVENT-DRIVEN (dvrWindow, diisi
+   * LEVEL_UPDATED) — bukan polling hls.levels[currentLevel] tiap detik
+   * (rapuh: currentLevel = −1 sebelum frag pertama). Fallback baca langsung
+   * dipertahankan untuk kompatibilitas; −1 bila tak diketahui (jujur).
+   * 'edge' TETAP liveSyncPosition (semantik chip waktu + guard DVR) —
+   * bar DVR memakai windowEnd yang faktual (lihat PlaybackInfo).
    */
   private updatePlaybackInfo(): void {
     const video = this.video;
@@ -1086,22 +1186,41 @@ export class StreamHealth {
       hls && typeof hls.liveSyncPosition === "number"
         ? hls.liveSyncPosition
         : -1;
+    let windowStart = -1;
+    let windowEnd = -1;
+    if (this.dvrWindow) {
+      windowStart = this.dvrWindow.start;
+      windowEnd = this.dvrWindow.end;
+    } else {
+      // Fallback: baca langsung (mis. event belum datang).
+      const frags = hls?.levels?.[hls.currentLevel]?.details?.fragments;
+      if (frags && frags.length > 0) {
+        const s = frags[0].start;
+        const last = frags[frags.length - 1];
+        const e = last.start + (last.duration || 0);
+        if (typeof s === "number" && Number.isFinite(s)) windowStart = s;
+        if (Number.isFinite(e) && e > windowStart) windowEnd = e;
+      }
+    }
+    // #75: fallback JUJUR — 20 dtk setelah manifest dimuat info jendela tak
+    // kunjung ada → nyatakan tidak tersedia; UI menampilkan pesan yang
+    // benar, bukan "menunggu…" selamanya.
+    const dvrState: DvrState =
+      windowStart >= 0 && windowEnd > windowStart
+        ? "ready"
+        : this.manifestAt > 0 &&
+            Date.now() - this.manifestAt > DVR_INFO_TIMEOUT_MS
+          ? "unavailable"
+          : "loading";
     this.playback = {
       pos: video.currentTime,
       bufStart,
       bufEnd,
       edge,
-      windowStart: this.dvrWindowStart(),
+      windowStart,
+      windowEnd,
+      dvrState,
     };
-  }
-
-  /** #69: awal sliding window playlist (frags[0].start); −1 bila tak diketahui. */
-  private dvrWindowStart(): number {
-    const hls = this.hls;
-    const frags = hls?.levels?.[hls.currentLevel]?.details?.fragments;
-    if (!frags || frags.length === 0) return -1;
-    const s = frags[0].start;
-    return typeof s === "number" && Number.isFinite(s) ? s : -1;
   }
 
   /** Estimasi fps dari delta totalVideoFrames (Chromium). */
@@ -1194,12 +1313,21 @@ export class StreamHealth {
   private bindNativeEvents(video: HTMLVideoElement): void {
     video.addEventListener("playing", this.onNativePlaying);
     video.addEventListener("error", this.onNativeError);
+    // #75: patokan "menunggu info DVR" di jalur HLS native (tanpa hls.js —
+    // info jendela memang tak tersedia; batas jujur tetap jalan).
+    video.addEventListener("loadedmetadata", this.onNativeMetadata);
   }
 
   private unbindNativeEvents(video: HTMLVideoElement): void {
     video.removeEventListener("playing", this.onNativePlaying);
     video.removeEventListener("error", this.onNativeError);
+    video.removeEventListener("loadedmetadata", this.onNativeMetadata);
   }
+
+  /** #75: metadata native dimuat = "manifest" versi jalur native. */
+  private onNativeMetadata = (): void => {
+    if (this.manifestAt === 0) this.manifestAt = Date.now();
+  };
 
   // ---------- Util internal ----------
 

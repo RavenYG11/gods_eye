@@ -35,7 +35,7 @@ const INITIAL: StreamSnapshot = {
   status: "loading",
   paused: false,
   prebuffering: false,
-  playback: { pos: 0, bufStart: -1, bufEnd: -1, edge: -1, windowStart: -1 },
+  playback: { pos: 0, bufStart: -1, bufEnd: -1, edge: -1, windowStart: -1, windowEnd: -1, dvrState: "loading" },
   delaySec: 0,
   attempt: 0,
   maxAttempts: 5,

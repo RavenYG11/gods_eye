@@ -41,6 +41,15 @@ Browser (laptop Rama, jaringan rumah)
   - **Production** (`npm start` di `backend/`): reverse proxy Express (`backend/server.js`).
   - Keduanya meneruskan ke `https://eofficev2.bekasikota.go.id` (`changeOrigin: true`,
     prefix `/cctv` dibuang). Frontend tidak peduli mode apa — selalu request `/cctv/…`.
+- **Worker deteksi — itu apa, buat apa (#60, #74, #75):** seluruh pipeline deteksi
+  kendaraan (inferensi YOLO26n via ONNX Runtime + tracking ByteTrack: Kalman filter,
+  asosiasi IoU dua tahap, ID + arah + velocity) berjalan di dalam sebuah
+  **Web Worker** (`dashboard/src/detection/detection.worker.ts`) — thread terpisah
+  dari thread utama browser. Inferensi model itu BERAT (ratusan ms di CPU); bila
+  dijalankan di thread utama, video 60fps akan patah-patah (UI jank). Dengan worker,
+  video tetap mulus sementara deteksi berjalan 1–10fps di latar; main thread hanya
+  menggambar box (`DetectionOverlay`) + mengekstrapolasi posisi antar-hasil deteksi
+  (basis waktu-video, jadi box ikut freeze dengan benar saat video buffering/pause).
 
 ---
 
@@ -355,6 +364,14 @@ Urutan: panel "Log koneksi" di app → `GET /api/health` → DevTools Console �
 ## 9. Backup & rollback
 
 - **Backup kode:** setiap perubahan di-commit & push ke `main` repo `gods_eye`.
+- **Arsip proyek (zip, #75):** dari folder `gods_eye`, jalankan
+  `node scripts/zip-project.mjs` → menghasilkan `gods_eye.zip` SATU TINGKAT
+  DI ATAS folder proyek (mis. `D:\gods_eye.zip` bila proyek di `D:\gods_eye`).
+  Isi = seluruh proyek KECUALI `node_modules/**`, `.git/**`, `backend/data/**`
+  (DB runtime) dan `*.zip` di root proyek (pengaman run-ulang). Script pure Node
+  tanpa dependency (memakai ulang `backend/lib/zip.js`); daftar exclude +
+  ukuran hasil ditampilkan di stdout setiap run. Aman dijalankan ulang —
+  hasil zip lama tidak ikut terkemas.
 - **Backup deploy:** tidak ada folder deploy manual lagi (backend serve `dist/` langsung
   dari repo). Untuk kembali ke versi lama: `git checkout <commit-lama>` → `npm run build`
   → `npm start`.
@@ -394,6 +411,9 @@ gods_eye/
 │   ├── package.json / package-lock.json
 │   ├── vite.config.ts        # base './' + server.proxy /cctv (mode dev)
 │   └── tsconfig*.json
+├── tools/train_yolo.py         # ★ Training YOLO dari export dataset → ONNX (#74)
+├── scripts/                    # check-model.mjs (pengingat model #74) +
+│                               # zip-project.mjs (arsip proyek → ../gods_eye.zip, #75)
 └── docs/
     ├── arsitektur.md         # Sentot #49 — arsitektur Opsi C Hybrid (+ Addendum #59)
     ├── mockup-dashboard.html # Prapto #50 — varian 1 (PILIHAN Rama)
@@ -481,6 +501,39 @@ gods_eye/
   posisi playback dalam jendela DVR. Terverifikasi VM: `npx tsc -b --force`
   0 error + `npm run build` sukses. ⚠️ **Stream runtime + 7 poin WAJIB
   verifikasi Rama di laptop (checklist §7).** |
+| 75 | Gunet | **5 BUTIR — JANGAN PUSH** (workflow mengikat: build → lapor Rama → push bila setuju).
+  Laporan Rama 16 Okt 2026 13:49 WIB (build #74 fresh): (1+2+3) **DVR: "menunggu
+  info DVR…" abadi, angka durasi hilang, slider mati — SATU AKAR (regresi #71,
+  baru terlihat di #74): 'edge' bar dibaca dari `hls.liveSyncPosition` — BUKAN
+  live edge, melainkan posisi TARGET playback hls.js = clamp(liveEdge−45,
+  jendela) (bukti: source hls.js 1.7.3 LatencyController); sejak #71
+  (liveSyncDuration 5→45), pada playlist berjendela pendek hasil clamp =
+  windowStart → syarat UI (edge>windowStart) gagal selamanya. Perbaikan:
+  jendela DVR dari event `LEVEL_UPDATED` (faktual: frags[0].start → akhir
+  fragmen terakhir); snapshot `playback` dapat `windowEnd` + `dvrState`
+  (loading/ready/unavailable); bar/slider/angka memakai [windowStart,
+  windowEnd]; chip waktu + guard DVR tetap pakai liveSyncPosition (semantik
+  tak berubah). Fallback JUJUR: >20 dtk tanpa info → "info jendela DVR tidak
+  tersedia dari stream ini" (bukan "menunggu…" abadi, bukan angka palsu).
+  (4) **BOX TIDAK NGUNCI (prioritas tertinggi) — DUA PUTUS DITEMUKAN:**
+  (a) race `inflight` di `workerDetector` (inflight=true SETELAH await
+  createImageBitmap → dua tick interleave → hasil inferensi asli HILANG +
+  inflight macet 30 dtk → box BEKU); diperbaiki: inflight=true sinkron
+  sebelum await pertama. (b) gate asosiasi TETAP 200px vs jeda deteksi yang
+  mengikuti kecepatan inferensi → ID-switch kronis → track lahir tiap frame
+  dengan vx=vy=0 → box DIAM lalu melompat (TERBUKTI uji Node: 12 frame @1fps,
+  objek 250px/dtk → 12 ID, semua vx=0.0); diperbaiki: gate ADAPTIF-WAKTU
+  max(200, 400×dt) per track — pola yang sama pernah menggigit di #67
+  (maxDistPx:90 vs 4,3fps). Uji Node pasca-fix: skenario A → 1 ID stabil +
+  velocity konvergen ke 250px/dtk; regresi #74 13/13 tetap lolos. (5)
+  **`scripts/zip-project.mjs`** (pure Node, reuse `backend/lib/zip.js`):
+  `node scripts/zip-project.mjs` → `<parent>/gods_eye.zip` (parent dihitung
+  dari lokasi script); exclude `node_modules/**`, `.git/**`,
+  `backend/data/**`, `*.zip` root; stdout tampilkan ukuran + exclude; aman
+  run-ulang. Terverifikasi VM: `npx tsc -b --force` 0 error + `npm run build`
+  sukses + `node --check` semua .js/.mjs + smoke zip (86 berkas, 193,3 MB,
+  `unzip -l` valid, exclude dipatuhi). Node VM: v24.20.0. ⚠️ **5 butir WAJIB
+  verifikasi Rama di laptop (stream asli + box ngikutin kendaraan).** |
 
 Berikutnya (sesuai urutan Meeting #4): Rama pilih hasil benchmark model i5 →
 pencabutan larangan detection → fase deteksi (arsitektur ulang + audit Cipher fokus model & UU PDP).
