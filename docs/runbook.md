@@ -535,5 +535,43 @@ gods_eye/
   `unzip -l` valid, exclude dipatuhi). Node VM: v24.20.0. ⚠️ **5 butir WAJIB
   verifikasi Rama di laptop (stream asli + box ngikutin kendaraan).** |
 
+| 76 | Gunet | **DEBUG DETEKSI TOTAL — AKAR BARU DITEMUKAN (bukan #75).** Perintah Rama
+  "debug & perbaiki sampai video + tracking TERBUKTI berfungsi". Investigasi headless
+  Chromium (Playwright Chrome 156 — Chrome 152 VM memblokir 127.0.0.1 via LNA checks)
+  + stream sintetis HLS 60 dtk (crop seed ASLI mobil-1.png/motor-1.png, ffmpeg,
+  3 kendaraan loop diagonal) menemukan: **(1) BUG FATAL `workerDetector.detect()`**:
+  `finally { inflight = false }` berjalan untuk SEMUA panggilan termasuk yang di-skip
+  guard → tick genap (di-skip) me-reset inflight milik tick ganjil yang sedang inferensi
+  → tick berikutnya lolos guard → slot `pending` tertimpa ID baru → hasil worker (ID lama)
+  selalu "basi" (`p.id !== msg.id`) → **SEMUA hasil inferensi dibuang (ok=0 selamanya),
+  box tak pernah tampil** — TERBUKTI via instrumentasi CDP (`result id=1 pending=12`).
+  Perbaikan: flag lokal `releaseInflight` — hanya panggilan yang memasang inflight boleh
+  melepasnya (`dashboard/src/detection/workerDetector.ts`). **(2) Prebuffer #71 DIHAPUS
+  TOTAL** (perintah Rama: tanpa pause otomatis berulang mengejar buffer) —
+  `lib/streamHealth.ts`: `liveSyncDuration` 45→10, `DVR_SAFE_BEHIND_SEC` 45→10, field
+  `prebuffering` dihapus dari snapshot + `StreamPlayer`/`useStreamSession`.
+  **(3) Kontrak `Detector.detect()` → `DetectOutcome` per-panggilan**
+  (`{detections, skipped, timedOut, inferMs, generation}`) — keputusan valid/tidak dari
+  outcome per panggilan, bukan flag bersama `lastSkipped` (akar bug audit A);
+  request ID di pesan worker + pesan `reset-tracker`; generasi timeline via event
+  `seeking` (diskontinuitas → buang hasil lama + reset tracker).
+  **(4) Tracker** (`detection/tracker.ts`): track hilang output framePts kini (anti
+  prediksi ganda Kalman); grace/removal berbasis WAKTU VIDEO (1,5 dtk / 8 dtk, bukan
+  hitungan frame); gate jarak adaptif (dt dijepit 2 dtk + batas 3x diagonal ukuran).
+  **(5) `DetectionOverlay`**: pemetaan `object-fit:contain` yang benar (rect tampil +
+  offset; penting fullscreen). **(6) Handle diagnostik read-only
+  `window.__godsEye`** (`App.tsx`): `{ getTelemetry(), getDetection(), getVideo() }`;
+  `getDetection()` sertakan `stats` (`calls, inferStarted, skipped, timedOut, ok`)
+  + `tracks[]` (`id, label, conf, bbox`) untuk QA headless otomatis.
+  **HASIL UJI VM** (Chromium headless, stream sintetis): deteksi `ok=12/12`,
+  `inferMs≈1,2–3,0 dtk` (wasm, CPU VM lemah — di i5 Rama jauh lebih cepat),
+  `tracksMaks=3` (`mobil:2, motor:1`), box tampil & mengunci (screenshot:
+  `motor 77% #3`, `mobil 90% #1`, `mobil 89% #2`); video 31fps, tak ada pause
+  aplikasi; seek→5 dtk: generasi naik, tracker reset, tak ada ID basi.
+  **BATAS UJI**: stream CCTV Bekasi asli tak terjangkau dari VM (WAF blokir IP
+  data center — curl exit 52/HTTP 000) → verifikasi stream ASLI wajib di laptop
+  Rama (§7). Model = YOLO26n pretrained Ultralytics (baseline); TIDAK ADA training
+  yang pernah dijalankan — klaim "belajar dari gambar upload" dilarang. |
+
 Berikutnya (sesuai urutan Meeting #4): Rama pilih hasil benchmark model i5 →
 pencabutan larangan detection → fase deteksi (arsitektur ulang + audit Cipher fokus model & UU PDP).

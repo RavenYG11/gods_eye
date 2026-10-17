@@ -140,7 +140,14 @@ ikut freeze dengan benar saat video buffering/pause).
 | Sinyal buffering = event `waiting` milik `<video>` | hls.js v1.6 tidak mengekspos `BUFFER_STALLED`; perilaku §4 tetap terpenuhi |
 | `base: './'` | arsitektur.md §3 |
 
-## Status verifikasi (jujur, 15 Okt 2026; #71: 16 Okt 2026)
+## Status verifikasi (jujur, 15 Okt 2026; #71: 16 Okt 2026; #76: 16 Okt 2026)
+
+**Model (jujur):** `yolo26n.onnx` = **YOLO26n pretrained resmi Ultralytics**
+(baseline; kelas COCO `car`→`mobil`, `motorcycle`→`motor`). **TIDAK ADA training
+yang pernah dijalankan** — gambar yang di-upload ke "Kelola Dataset" tersimpan
+sebagai seed/dataset, BUKAN dipakai melatih model. Pipeline training
+(`docs/training.md`, `#74`) adalah dokumentasi untuk KERJA MENDATANG, bukan
+yang sudah terjadi. Jangan klaim model "belajar dari gambar upload".
 
 - `npm run build` (`tsc -b` + `vite build`): **BERSIH, tanpa error** (hanya warning
   chunk > 500 kB yang sudah dinyatakan harmless di QA #54). Berlaku juga
@@ -158,6 +165,16 @@ ikut freeze dengan benar saat video buffering/pause).
 - QA Testarossa #54: **LULUS DENGAN CATATAN** — laporan: `docs/qa-report-v0.1.md`.
   Audit keamanan Cipher #53: lulus tanpa temuan kritis.
 - Runbook operasional (Epthal #55, direvisi Gunet #59): **`docs/runbook.md`**.
+- **#76 (Gunet, 16 Okt 2026): debug deteksi total — SELESAI & TERVERIFIKASI VM.**
+  Akar: bug fatal `workerDetector` (`finally` me-reset `inflight` milik panggilan
+  lain → semua hasil inferensi dibuang). Uji E2E headless Chromium + stream HLS
+  sintetis (crop seed asli): deteksi `ok=12/12`, `tracksMaks=3` (`mobil:2,
+  motor:1`), box mengunci (`motor 77% #3`, `mobil 90% #1`, `mobil 89% #2`);
+  video 31fps tanpa pause aplikasi; prebuffer #71 dihapus total. Uji Node
+  `dashboard/qa/` (`./run.sh`): 15/15 + regresi inflight lolos.
+  **BATAS: stream CCTV Bekasi asli tak terjangkau dari VM (WAF blokir IP
+  data center) → "video & tracking di stream ASLI" WAJIB verifikasi Rama di
+  laptop** (checklist `docs/runbook.md` §7).
 
 ## Berikutnya (sesuai urutan Meeting #4 + perintah #60)
 
