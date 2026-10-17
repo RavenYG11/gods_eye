@@ -20,6 +20,7 @@ export type {
   DetectionFrame,
   DetectionPort,
   Detector,
+  DetectOutcome,
   VehicleDirection,
 } from "./types";
 export type { TrackedDetection, TrackerOptions } from "./tracker";

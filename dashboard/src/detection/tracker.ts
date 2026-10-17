@@ -61,16 +61,18 @@ export interface TrackerOptions {
   /** Fallback jarak-pusat tahap-2 (lebih ketat). */
   distGateLowPx: number;
   /**
-   * Track yang hilang (tak cocok di kedua tahap) disimpan N frame deteksi
-   * untuk re-identifikasi, lalu dihapus. 30 frame ≈ ±7 dtk @ 4,3 fps —
-   * cukup untuk oklusi tiang/kendaraan lain.
+   * Track yang hilang (tak cocok di kedua tahap) disimpan N DETIK (waktu
+   * video) untuk re-identifikasi, lalu dihapus. #76: dulu 30 FRAME —
+   * di fps deteksi variabel (2–10 fps) "30 frame" = 3–15 dtk, tidak
+   * konsisten. 8 dtk cukup untuk oklusi tiang/kendaraan lain.
    */
-  maxTimeLostFrames: number;
+  maxTimeLostSec: number;
   /**
-   * Track yang baru hilang TETAP DIRENDER (redup, posisi prediksi Kalman)
-   * selama N frame — anti-kedip warisan #62 (dulu "graceFrames").
+   * Track yang baru hilang TETAP DIRENDER (redup, posisi prediksi) selama
+   * N DETIK — anti-kedip warisan #62. #76: dulu 7 frame (≈1,75 dtk @4fps,
+   * tapi 3,5 dtk @2fps — ghost box kelamaan saat fps rendah).
    */
-  graceFrames: number;
+  graceSec: number;
   /** |delta y| minimum (piksel bitmap) agar arah berani dinyatakan. */
   minDyPx: number;
   /** Track harus terlihat ≥ N frame sebelum arah diklasifikasi. */
@@ -79,6 +81,17 @@ export interface TrackerOptions {
   historyLen: number;
   /** Bobot EMA smoothing velocity output (0,5 = stabil, tetap responsif). */
   velocityAlpha: number;
+  /**
+   * #76: BATAS KELEBARAN GATE RELATIF UKURAN (audit D — "gate terlalu
+   * longgar untuk kendaraan kecil/berdekatan"). Gate adaptif-waktu #75
+   * (400px/dtk × dt) benar untuk kendaraan cepat/dekat kamera, tetapi
+   * untuk kendaraan JAUH (kecil di piksel, gerak lambat di piksel) gate
+   * raksasa hanya membuka peluang salah-re-id antar-kendaraan
+   * berdekatan. Maka gate = min(adaptive, max(basePx, faktor × diagonal
+   * box)): ekspektasi gerak (px) berkorelasi dengan ukuran lewat
+   * perspektif. 3 = toleransi 3× diagonal — longgar tapi terbatas.
+   */
+  distGateSizeFactor: number;
   /**
    * Jepit kecepatan output (piksel BITMAP per detik-waktu-video).
    * Menolak outlier: mismatch yang lolos gate tidak boleh membuat prediksi
@@ -94,12 +107,13 @@ export const DEFAULT_TRACKER_OPTIONS: TrackerOptions = {
   iouGateLow: 0.3,
   distGateHighPx: 200,
   distGateLowPx: 120,
-  maxTimeLostFrames: 30,
-  graceFrames: 7,
+  maxTimeLostSec: 8,
+  graceSec: 1.5,
   minDyPx: 8,
   minSeenForDirection: 3,
   historyLen: 8,
   velocityAlpha: 0.5,
+  distGateSizeFactor: 3,
   maxSpeedPxS: 400,
 };
 
@@ -455,8 +469,6 @@ interface Track {
   classId: number;
   /** "active" = cocok baru-baru ini; "lost" = menunggu re-identifikasi. */
   state: "active" | "lost";
-  /** Frame deteksi sejak cocok terakhir (0 = cocok frame ini). */
-  timeSinceUpdate: number;
   /** Jumlah frame cocok beruntun (untuk klasifikasi arah). */
   hits: number;
   lastConfidence: number;
@@ -512,8 +524,10 @@ export class ByteTracker {
     }
 
     // Hapus yang hilang terlalu lama (di luar jangkauan re-identifikasi).
+    // #76: BERBASIS WAKTU-VIDEO (dulu hitungan frame — inkonsisten di fps
+    // deteksi variabel). lostSec = framePts − lastSeenPts.
     this.tracks = this.tracks.filter(
-      (t) => t.timeSinceUpdate <= o.maxTimeLostFrames,
+      (t) => framePts - t.lastSeenPts <= o.maxTimeLostSec,
     );
 
     // Render: track aktif + yang baru hilang dalam masa tenggang (stale,
@@ -521,7 +535,9 @@ export class ByteTracker {
     const result: TrackedDetection[] = [];
     for (const t of this.tracks) {
       const isStale = t.state === "lost";
-      if (isStale && t.timeSinceUpdate > o.graceFrames) continue;
+      // #76: grace BERBASIS WAKTU (dulu graceFrames — ghost box kelamaan
+      // saat fps rendah).
+      if (isStale && framePts - t.lastSeenPts > o.graceSec) continue;
       const [x, y, w, h] = t.kf.box;
       result.push({
         classId: t.classId,
@@ -534,7 +550,18 @@ export class ByteTracker {
         stale: isStale,
         vx: t.vx,
         vy: t.vy,
-        framePts: t.lastSeenPts,
+        // #76 — PERBAIKAN BUG AUDIT C ("timestamp dan prediksi box tidak
+        // konsisten" / prediksi ganda). SEBELUM: untuk track HILANG, bbox
+        // = hasil kf.predict() (sudah dimajukan ±satu interval) TETAPI
+        // framePts = lastSeenPts (waktu observasi LAMA) → overlay lalu
+        // mengekstrapolasi LAGI sejauh (now − lastSeenPts) dengan velocity
+        // EMA → PREDIKSI GANDA: box "terbang" terlalu jauh / melompat.
+        // SESUDAH: bbox hasil predict ≈ posisi "kini" (tiap update()
+        // mem-predict semua track sekali) → framePts = framePts kini →
+        // overlay hanya mengekstrapolasi residu kecil (now → waktu render).
+        // Untuk track yang cocok frame ini, lastSeenPts == framePts
+        // (diset refreshTrack) → identik, tak ada perubahan perilaku.
+        framePts,
       });
     }
     // Urutan stabil untuk overlay: ID menaik.
@@ -592,11 +619,25 @@ export class ByteTracker {
     // Hungarian (biaya global minimum) + IoU tetap memprioritaskan pasangan
     // terdekat, dan kerusakan ID-switch kronis (pasti) lebih buruk daripada
     // risiko salah-re-id (kadang-kadang).
-    const gateFor = (t: Track, basePx: number): number =>
-      Math.max(
-        basePx,
-        o.maxSpeedPxS * Math.max(0, framePts - t.lastSeenPts),
-      );
+    //
+    // #76 — DUA PENGUAT (audit D):
+    //   (a) dt DIJEPIT MAKSIMUM 2 dtk. Tanpa jepit, jeda deteksi panjang
+    //       (CPU berat / stall) membuka gate ribuan piksel → asosiasi liar
+    //       antar-kendaraan tak terkait. Di atas 2 dtk tanpa observasi,
+    //       track lebih baik dibiarkan mati dan lahir baru daripada
+    //       "menebak" sejauh itu (re-id lewat tahap-2 tetap mungkin via IoU).
+    //   (b) BATAS RELATIF UKURAN (distGateSizeFactor × diagonal box).
+    //       Kendaraan jauh = kecil di piksel = gerak lambat di piksel
+    //       (perspektif); gate 400px+ untuk box 40px hanya mengundang
+    //       salah-re-id antar-kendaraan berdekatan. Batas = toleransi 3×
+    //       diagonal — longgar tapi tidak liar.
+    const gateFor = (t: Track, basePx: number): number => {
+      const dt = Math.min(Math.max(0, framePts - t.lastSeenPts), 2);
+      const adaptive = Math.max(basePx, o.maxSpeedPxS * dt);
+      const [, , bw, bh] = t.kf.box;
+      const sizeCap = Math.max(basePx, o.distGateSizeFactor * Math.hypot(bw, bh));
+      return Math.min(adaptive, sizeCap);
+    };
 
     // 3) TAHAP-1: semua track (aktif + hilang) ↔ deteksi high-confidence.
     const s1 = associate(
@@ -633,10 +674,11 @@ export class ByteTracker {
       refreshed.add(tr);
     }
 
-    // 5) Track yang tak cocok di kedua tahap → hilang (umur +1).
+    // 5) Track yang tak cocok di kedua tahap → hilang.
+    // #76: umur berbasis waktu-video (framePts − lastSeenPts), dihitung di
+    // update() — tak ada lagi counter frame (inkonsisten di fps variabel).
     for (const t of groupTracks) {
       if (refreshed.has(t)) continue;
-      t.timeSinceUpdate += 1;
       t.state = "lost";
     }
 
@@ -654,7 +696,6 @@ export class ByteTracker {
         label: d.label,
         classId: d.classId,
         state: "active",
-        timeSinceUpdate: 0,
         hits: 1,
         lastConfidence: d.confidence,
         history: [{ cx, cy, pts: framePts }],
@@ -687,7 +728,6 @@ export class ByteTracker {
     t.prevCx = c.cx;
     t.prevCy = c.cy;
     t.prevPts = framePts;
-    t.timeSinceUpdate = 0;
     t.state = "active";
     t.hits += 1;
     t.lastConfidence = det.confidence;

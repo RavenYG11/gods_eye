@@ -45,12 +45,38 @@ export interface DetectionFrame {
   inferMs: number;
 }
 
+/**
+ * #76: HASIL SATU PANGGILAN detect() — status TERIKAT pada pekerjaan ini,
+ * bukan flag global. Akar bug audit A: `lastSkipped` dipakai bersama oleh
+ * SEMUA panggilan — tick yang MELEWATI frame (worker sibuk) menimpa flag
+ * tepat di antara inferensi aktif dan pemrosesan hasilnya → hasil inferensi
+ * VALID dibuang (`useDetection` melihat lastSkipped=true) → overlay
+ * mempertahankan box lama → tampak diam/melompat. Dengan outcome per
+ * panggilan, "skip" milik tick N tidak bisa meracuni hasil tick N−1.
+ */
+export interface DetectOutcome {
+  /** Kotak hasil (KOSONG bila skipped/timedOut — bukan hasil inferensi). */
+  detections: Detection[];
+  /** true = frame dilewati (worker sibuk / belum siap) — bukan hasil. */
+  skipped: boolean;
+  /** true = worker tidak membalas dalam TIMEOUT_MS — bukan hasil. */
+  timedOut: boolean;
+  /** Biaya putaran worker (ms); null bila bukan hasil inferensi nyata. */
+  inferMs: number | null;
+  /** Generasi timeline saat frame ditangkap (lihat currentGeneration). */
+  generation: number;
+}
+
 /** Kontrak yang WAJIB dipenuhi implementasi model apapun (YOLO26n, PicoDet, dst). */
 export interface Detector {
   /** Muat model sekali di awal. Melempar Error bila gagal. */
   init(opts: { modelUrl: string; labels: string[] }): Promise<void>;
-  /** Satu frame video → daftar kotak. TIDAK boleh melempar saat stream jalan. */
-  detect(frame: ImageData | HTMLVideoElement): Promise<Detection[]>;
+  /**
+   * Satu frame video → hasil SATU panggilan. TIDAK boleh melempar saat
+   * stream jalan. #76: mengembalikan DetectOutcome (status terikat pada
+   * panggilan ini) — bukan lagi Detection[] polos + flag global.
+   */
+  detect(frame: ImageData | HTMLVideoElement): Promise<DetectOutcome>;
   /** Bebaskan resource (dipanggil saat ganti kamera / unmount). */
   dispose(): Promise<void>;
   /**

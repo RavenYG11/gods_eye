@@ -9,7 +9,7 @@
 // backend/server.js). Tanpa cross-origin isolation ORT otomatis turun ke
 // 1 thread; deteksi tetap jalan, hanya lebih lambat.
 
-import type { Detection, Detector } from "./types";
+import type { Detection, Detector, DetectOutcome } from "./types";
 import {
   imageDataToNchw,
   letterboxParams,
@@ -171,16 +171,37 @@ export class OnnxVehicleDetector implements Detector {
   /**
    * Kontrak Detector.detect — TIDAK boleh melempar saat stream jalan.
    * Dipakai bila detector dijalankan di main thread (bukan jalur utama #60).
+   * #76: kontrak kini DetectOutcome (bukan Detection[] polos).
    */
-  async detect(frame: ImageData | HTMLVideoElement): Promise<Detection[]> {
+  async detect(frame: ImageData | HTMLVideoElement): Promise<DetectOutcome> {
     try {
-      if (!this.session) return [];
+      if (!this.session) {
+        return {
+          detections: [],
+          skipped: true,
+          timedOut: false,
+          inferMs: null,
+          generation: 0,
+        };
+      }
       // Jalur utama #60 memakai inferFromBitmap via worker; detect() di sini
       // hanya untuk kompatibilitas kontrak.
       void frame;
-      return [];
+      return {
+        detections: [],
+        skipped: true,
+        timedOut: false,
+        inferMs: null,
+        generation: 0,
+      };
     } catch {
-      return [];
+      return {
+        detections: [],
+        skipped: true,
+        timedOut: false,
+        inferMs: null,
+        generation: 0,
+      };
     }
   }
 
