@@ -35,6 +35,9 @@ export const STREAM_PROXY_PREFIX = "/cctv";
  * Proksi (Vite saat dev, Express saat production) meneruskannya ke upstream.
  */
 export function getStreamUrl(camera: CameraConfig): string {
+  // #76: URL relatif (mis. "/test-hls/stream.m3u8") dipakai apa adanya —
+  // untuk stream uji lokal / sintetis tanpa lewat proksi upstream.
+  if (camera.streamUrl.startsWith("/")) return camera.streamUrl;
   const upstream = new URL(camera.streamUrl);
   return `${STREAM_PROXY_PREFIX}${upstream.pathname}${upstream.search}`;
 }

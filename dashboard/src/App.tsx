@@ -67,6 +67,64 @@ export default function App() {
   );
   const [now, setNow] = useState(() => Date.now());
 
+  // #76 — HANDLE DIAGNOSTIK (read-only) untuk uji otomatis/QA.
+  // window.__godsEye = { telemetry, detection, video } — dipakai skrip uji
+  // headless untuk membaca metrik tanpa mengutak-atik DOM. Tidak mengubah
+  // perilaku aplikasi; didokumentasikan di docs/runbook.md §QA.
+  useEffect(() => {
+    (window as unknown as { __godsEye?: unknown }).__godsEye = {
+      getTelemetry: () => session.getTelemetry(),
+      getDetection: () => ({
+        status: detection.status,
+        detFps: detection.detFps,
+        inferMs: detection.inferMs,
+        provider: detection.provider,
+        counts: detection.counts,
+        threshold: detection.threshold,
+        stats: detection.stats,
+        trackCount: detection.detections.length,
+        tracks: detection.detections.map((d) => ({
+          id: d.trackId,
+          label: d.label,
+          conf: +d.confidence.toFixed(2),
+          bbox: d.bbox.map((v) => Math.round(v)),
+          stale: d.stale,
+          framePts: +d.framePts.toFixed(2),
+        })),
+      }),
+      getVideo: () => {
+        const v = videoSinkRef.current;
+        if (!v) return null;
+        let bufStart = -1;
+        let bufEnd = -1;
+        try {
+          if (v.buffered.length > 0) {
+            bufStart = v.buffered.start(0);
+            bufEnd = v.buffered.end(v.buffered.length - 1);
+          }
+        } catch {
+          /* abaikan */
+        }
+        return {
+          currentTime: +v.currentTime.toFixed(2),
+          paused: v.paused,
+          readyState: v.readyState,
+          videoWidth: v.videoWidth,
+          videoHeight: v.videoHeight,
+          bufStart: +bufStart.toFixed(2),
+          bufEnd: +bufEnd.toFixed(2),
+        };
+      },
+      getStream: () => ({
+        status: session.snap.status,
+        delaySec: session.snap.delaySec,
+        stalls: session.snap.metrics.stalls,
+        reconnects: session.snap.metrics.reconnects,
+        fps: session.snap.metrics.fps,
+      }),
+    };
+  }, [session, detection]);
+
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);

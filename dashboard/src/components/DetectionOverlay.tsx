@@ -28,11 +28,13 @@ function drawBox(
   ctx: CanvasRenderingContext2D,
   det: Detection,
   scale: number,
+  offX: number,
+  offY: number,
   dim: boolean,
 ): void {
   const [x, y, w, h] = det.bbox;
-  const sx = x * scale;
-  const sy = y * scale;
+  const sx = offX + x * scale;
+  const sy = offY + y * scale;
   const sw = w * scale;
   const sh = h * scale;
   const color = DIRECTION_COLORS[det.direction ?? "unknown"];
@@ -100,7 +102,28 @@ export function DetectionOverlay({ getVideo, detections, visible }: Props) {
       if (!v || v.videoWidth === 0) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const scale = canvas.width / v.videoWidth;
+      // #76 — PEMETAAN OBJECT-FIT:CONTAIN YANG BENAR (audit butir 4).
+      // SEBELUM: scale = canvas.width / videoWidth — asumsi gambar mengisi
+      // penuh elemen. Bila rasio elemen ≠ rasio video (mis. fullscreen di
+      // layar non-16:9), contain me-letterbox → box bergeser/salah skala.
+      // SESUDAH: hitung rect gambar yang benar-benar tampil (contain-fit),
+      // lalu petakan koordinat video (bbox dalam piksel videoWidth ×
+      // videoHeight) ke rect itu. Saat rasio sama → identik dengan lama.
+      const vw = v.videoWidth;
+      const vh = v.videoHeight;
+      const ew = v.clientWidth;
+      const eh = v.clientHeight;
+      const fitScale = Math.min(ew / vw, eh / vh);
+      const dispW = vw * fitScale;
+      const dispH = vh * fitScale;
+      const offX = (ew - dispW) / 2;
+      const offY = (eh - dispH) / 2;
+      // Kanvas di-fit ke clientWidth/clientHeight (lihat effect fit di
+      // atas); koordinat kanvas dalam CSS px yang sama.
+      const cw = canvas.width / ew; // ≈1 — jaga-jaga bila kanvas diskala
+      const ox = offX * cw;
+      const oy = offY * cw;
+      const scale = fitScale * cw;
       const nowPts = v.currentTime;
       for (const det of detsRef.current) {
         const td = det as TrackedDetection;
@@ -112,7 +135,7 @@ export function DetectionOverlay({ getVideo, detections, visible }: Props) {
           typeof td.framePts === "number"
             ? predictBbox(det.bbox, td.vx, td.vy, nowPts - td.framePts)
             : det.bbox;
-        drawBox(ctx, { ...det, bbox }, scale, td.stale === true);
+        drawBox(ctx, { ...det, bbox }, scale, ox, oy, td.stale === true);
       }
 
       // Legenda kecil — jujur: arah vertikal frame, bukan in/out gerbang.

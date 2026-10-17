@@ -44,13 +44,6 @@ export interface StreamSnapshot {
   /** #69: true bila <video> sedang dijeda user (dari event play/pause nyata). */
   paused: boolean;
   /**
-   * #71: true bila engine sedang JEDA INTERNAL (penjaga prebuffer) —
-   * video.pause() dipanggil mesin, BUKAN user. UI memakai flag ini agar
-   * chip waktu tidak menampilkan "DIJEDA" dan overlay "Buffering…" tidak
-   * muncul selama pembangunan ulang buffer.
-   */
-  prebuffering: boolean;
-  /**
    * #69: info playback terkini — bahan kontrol play/pause + tampilan waktu
    * + bar jendela DVR. Diperbarui tiap 1 dtk oleh tickDelay() (selalu nilai
    * TERBARU, bukan ring buffer seperti telemetri #68).
@@ -197,27 +190,23 @@ const LIVE_THRESHOLD_SEC = 3;
  */
 const DVR_GUARD_MARGIN_SEC = 10;
 /**
- * #71: target seek penjaga DVR — 45 dtk di belakang live edge, SELARAS
- * dengan cushion anti-buffering baru (liveSyncDuration: 45). Nilai lama
- * 25 dtk (#68) tidak konsisten dengan cushion baru: guard akan menarik
- * posisi play 20 dtk LEBIH DEPAN dari target stabil → gap buffer menyusut
- * sia-sia tiap guard aktif.
+ * #76: target seek penjaga DVR — 10 dtk di belakang live edge, SELARAS
+ * dengan cushion anti-buffering (liveSyncDuration: 10, permintaan Rama
+ * 16 Okt 2026). Nilai lama 45 dtk (#71) memaksa offset yang tidak cocok
+ * dengan jendela playlist pendek dan memperbesar risiko posisi basi.
  */
-const DVR_SAFE_BEHIND_SEC = 45;
+const DVR_SAFE_BEHIND_SEC = 10;
 /**
- * #71 — PENJAGA PREBUFFER INTERNAL (16 Okt 2026, permintaan Rama: "jangan
- * pernah stall/jeda visual"). Cushion 45 dtk membuat stall nyaris mustahil
- * (butuh >±37 dtk tanpa data), tapi bila gap (bufEnd − pos) tetap menipis
- * di bawah ambang, engine JEDA INTERNAL: video.pause() agar hls.js
- * mengisi buffer sampai tebal lagi, lalu play() — tanpa overlay spinner
- * "Buffering…" yang terlihat user. Snapshot membawa flag `prebuffering`
- * agar UI tidak menampilkan chip "DIJEDA" selama jeda internal ini.
+ * #76 — PENJAGA PREBUFFER INTERNAL (#71) DIHAPUS TOTAL (16 Okt 2026,
+ * perintah eksplisit Rama): "jangan melakukan pause otomatis berulang
+ * untuk mengejar target buffer" dan "memutar bagian stream yang sudah
+ * tersedia sambil mengunduh bagian berikutnya, bukan berhenti dulu untuk
+ * menunggu buffer puluhan detik". Pola lama — gap (bufEnd−pos) < 8 dtk →
+ * video.pause(), tunggu gap ≥ 30 dtk atau timeout 25 dtk — adalah SIKLUS
+ * JEDA BUATAN: video berhenti walau sumber stream lancar. Kini bila
+ * buffer menipis, player memutar apa yang tersedia sampai event 'waiting'
+ * alami → status buffering normal (jujur, terlihat user).
  */
-const PREBUFFER_LOW_GAP_SEC = 8;
-/** Lanjut play bila cushion sudah setebal ini lagi. */
-const PREBUFFER_RESUME_GAP_SEC = 30;
-/** Batas jeda internal: lewat ini, serahkan ke jalur buffering normal. */
-const PREBUFFER_TIMEOUT_MS = 25_000;
 /** Stall > 10 dtk + multi-bitrate → turunkan kualitas dulu (§4 butir 4). */
 const STALL_DOWNGRADE_MS = 10_000;
 /** Interval pemeriksaan latar saat OFFLINE (mockup: "pemeriksaan otomatis
@@ -244,9 +233,6 @@ export class StreamHealth {
   private status: StreamStatus = "loading";
   /** #69: state jeda dari event play/pause nyata <video> (bukan tebakan UI). */
   private paused = false;
-  /** #71: flag jeda internal prebuffer (lihat konstanta PREBUFFER_*). */
-  private prebuffering = false;
-  private prebufferTimer: number | null = null;
   /** #69: info playback terkini (pos/buffer/edge/window), refresh tiap 1 dtk. */
   private playback: PlaybackInfo = {
     pos: 0,
@@ -308,10 +294,6 @@ export class StreamHealth {
    * Rujukan perilaku: arsitektur.md §4 tabel status → BUFFERING.
    */
   private onVideoWaiting = (): void => {
-    // #71: selama jeda internal prebuffer, 'waiting' adalah hal yang
-    // diantisipasi (buffer memang sedang dibangun ulang) — jangan hitung
-    // stall, jangan tampilkan overlay.
-    if (this.prebuffering) return;
     if (this.status === "live" || this.status === "delay") {
       this.metrics.stalls += 1;
       this.setStatus("buffering");
@@ -344,10 +326,6 @@ export class StreamHealth {
    * asumsi UI. Emit agar tombol play/pause + label waktu langsung sinkron.
    */
   private onVideoPlay = (): void => {
-    // #71: play (dari user atau akhir prebuffer) membatalkan jeda internal.
-    if (this.prebuffering) {
-      this.cancelPrebuffer();
-    }
     if (this.paused) {
       this.paused = false;
       this.emit();
@@ -449,8 +427,6 @@ export class StreamHealth {
   resumePlayback(): void {
     const video = this.video;
     if (!video || !video.paused) return;
-    // #71: resume dari user membatalkan jeda internal prebuffer (bila ada).
-    this.cancelPrebuffer();
     this.dvrWindowGuard();
     this.clampToDvrWindow();
     if (this.hls) {
@@ -596,7 +572,7 @@ export class StreamHealth {
       //   - maxBufferLength: 30 → 120. Untuk LIVE, buffer maju MEMANG
       //     dibatasi live edge (playlist tak punya segmen di depan tepi),
       //     jadi angka ini hanya plafon — tapi 30 terlalu kecil sebagai
-      //     plafon saat cushion kini 45 dtk.
+      //     plafon saat cushion kini 10 dtk.
       //   - maxMaxBufferLength: 600 (plafon absolut hls.js; eksplisit agar
       //     tidak tergantung default).
       //   - backBufferLength: 90 (default 30). Buffer ke BELAKANG yang
@@ -604,19 +580,17 @@ export class StreamHealth {
       maxBufferLength: 120,
       maxMaxBufferLength: 600,
       backBufferLength: 90,
-      // #71: liveSyncDuration: 5 → 45. INI AKAR LAGNYA (bukti kode):
-      // hls.js menargetkan posisi play TEPAT liveSyncDuration di belakang
-      // live edge (latency-controller: targetLatency = liveSyncDuration).
-      // Cushion 5 dtk < ekor fetch satu segmen lambat (fragLoadingMaxRetry 4
-      // × retryDelay 2000 = 8 dtk+ SEKALI fetch gagal) → tiap jitter
-      // jaringan = event 'waiting' = overlay "Buffering…" yang Rama lihat
-      // sebagai "dashboard ngelag padahal situs Bekasi lancar". Situs Bekasi
-      // memakai trik yang sama (play jauh di belakang edge) dengan cushion
-      // puluhan detik. Kini: target ±45 dtk di belakang edge → butuh
-      // >±37 dtk tanpa data sebelum stall; penjaga prebuffer (#71, bawah)
-      // menutup sisa celahnya. liveMaxLatencyDuration: Infinity tetap —
-      // catch-up natif MATI TOTAL (kebijakan #68, bukan penyebab lag).
-      liveSyncDuration: 45,
+      // #76 (16 Okt 2026, perintah Rama): liveSyncDuration 45 → 10.
+      // Rama menerima playback ~10 dtk di belakang ujung stream; offset 45
+      // dtk (#71) tidak cocok dengan jendela playlist pendek (posisi play
+      // lahir di bibir kedaluwarsa → risiko rebuffer/guard tak perlu).
+      // Prinsip tetap: putar bagian yang SUDAH tersedia (±10 dtk di
+      // belakang edge) sambil mengunduh berikutnya — BUKAN berhenti
+      // menunggu buffer puluhan detik (penjaga prebuffer #71 DIHAPUS di
+      // #76 karena itu siklus jeda buatan).
+      // liveMaxLatencyDuration: Infinity tetap — catch-up natif MATI TOTAL
+      // (kebijakan #68, bukan penyebab lag).
+      liveSyncDuration: 10,
       // #68: CATCH-UP NATIF DIMATIKAN TOTAL (Infinity). BUKTI (hls.js 1.7.3,
       // stream-controller): bila currentTime < end − maxLatency, hls.js
       // MELAKUKAN SEEK KE liveSyncPosition (tepi!). Nilai 30 (#66) berarti
@@ -885,9 +859,6 @@ export class StreamHealth {
     // tiap detik — terpisah dari logika status di bawah, karena kontrol
     // play/pause + tampilan waktu butuh datanya di semua state sesi berjalan.
     this.updatePlaybackInfo();
-    // #71: penjaga prebuffer internal — SEBELUM emit agar snapshot yang
-    // keluar sudah membawa flag prebuffering terbaru.
-    this.tickPrebuffer();
     // #70.2: emit TIAP DETIK walau status/delaySec tidak berubah. Akar bug
     // "bar mentok": snapshot sebelumnya hanya di-emit saat status berubah —
     // saat delay stabil (mis. "DELAY ±16 dtk" terus-menerus) UI tidak pernah
@@ -1021,103 +992,6 @@ export class StreamHealth {
     } catch {
       return false;
     }
-  }
-
-  /**
-   * #71 — PENJAGA PREBUFFER INTERNAL. Dipanggil tiap 1 dtk dari tickDelay().
-   * Bila cushion (gap = bufEnd − pos) menipis di bawah PREBUFFER_LOW_GAP_SEC
-   * selagi video diputar, lakukan JEDA INTERNAL (video.pause) agar hls.js
-   * mengisi buffer sampai tebal lagi, lalu lanjut play. Proaktif (buffer
-   * belum kosong) dan TANPA overlay spinner "Buffering…" yang terlihat user.
-   */
-  private tickPrebuffer(): void {
-    const video = this.video;
-    if (!video) return;
-    const { pos, bufEnd } = this.playback;
-    const gap = bufEnd >= 0 ? bufEnd - pos : -1;
-    if (this.prebuffering) {
-      // Lanjut play hanya bila cushion sudah tebal lagi.
-      if (gap >= PREBUFFER_RESUME_GAP_SEC) {
-        this.endPrebuffer();
-      }
-      return;
-    }
-    // Hanya saat sesi berjalan DAN video sedang diputar (bukan dijeda user).
-    // gap < 0 = buffer tak terbaca → bukan urusan prebuffer.
-    if (
-      video.paused ||
-      (this.status !== "live" && this.status !== "delay") ||
-      gap < 0 ||
-      gap >= PREBUFFER_LOW_GAP_SEC
-    ) {
-      return;
-    }
-    this.beginPrebuffer(gap);
-  }
-
-  private beginPrebuffer(gap: number): void {
-    const video = this.video;
-    if (!video || this.prebuffering) return;
-    this.prebuffering = true;
-    this.pushLog(
-      "warn",
-      `Prebuffer: cushion menipis (${gap.toFixed(1)} dtk) — jeda internal ` +
-        `singkat untuk membangun ulang buffer, tanpa overlay buffering.`,
-    );
-    try {
-      video.pause();
-    } catch {
-      // pause gagal → batalkan prebuffer, biarkan jalur normal.
-      this.prebuffering = false;
-      return;
-    }
-    // Jaring pengaman: bila buffer tak kunjung pulih, serahkan ke jalur
-    // buffering normal (overlay + stall logic) — jangan diam selamanya.
-    this.prebufferTimer = window.setTimeout(() => {
-      this.prebufferTimer = null;
-      if (!this.prebuffering) return;
-      this.prebuffering = false;
-      this.pushLog(
-        "warn",
-        "Prebuffer: buffer tidak pulih dalam 25 dtk — kembali ke pemutaran normal.",
-      );
-      const v = this.video;
-      if (v && v.paused) {
-        // Bila buffer masih tipis, 'waiting' → overlay buffering normal.
-        v.play().catch(() => undefined);
-      }
-      this.emit();
-    }, PREBUFFER_TIMEOUT_MS);
-    this.emit();
-  }
-
-  private endPrebuffer(): void {
-    if (!this.prebuffering) return;
-    this.prebuffering = false;
-    if (this.prebufferTimer !== null) {
-      clearTimeout(this.prebufferTimer);
-      this.prebufferTimer = null;
-    }
-    this.pushLog(
-      "ok",
-      "Prebuffer selesai — buffer tebal kembali, pemutaran lanjut.",
-    );
-    const video = this.video;
-    if (video && video.paused) {
-      video.play().catch(() => undefined);
-    }
-    this.emit();
-  }
-
-  /** Batalkan prebuffer tanpa memutar (dipakai saat user mengambil alih). */
-  private cancelPrebuffer(): void {
-    if (!this.prebuffering) return;
-    this.prebuffering = false;
-    if (this.prebufferTimer !== null) {
-      clearTimeout(this.prebufferTimer);
-      this.prebufferTimer = null;
-    }
-    this.emit();
   }
 
   /**
@@ -1365,10 +1239,6 @@ export class StreamHealth {
   private clearAllTimers(): void {
     this.clearReconnectTimers();
     this.clearStallTimer();
-    if (this.prebufferTimer !== null) {
-      clearTimeout(this.prebufferTimer);
-      this.prebufferTimer = null;
-    }
     if (this.resumeWatchdogTimer !== null) {
       clearTimeout(this.resumeWatchdogTimer);
       this.resumeWatchdogTimer = null;
@@ -1395,7 +1265,6 @@ export class StreamHealth {
     return {
       status: this.status,
       paused: this.paused,
-      prebuffering: this.prebuffering,
       playback: { ...this.playback },
       delaySec: this.delaySec,
       attempt: this.attempt,
