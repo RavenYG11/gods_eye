@@ -1,3 +1,5 @@
+> **Arsip versi sebelumnya.** Fitur dataset sudah dihapus; tracking terbaru memakai worker optical flow. Lihat [tracking-piksel.md](tracking-piksel.md) dan [README](../README.md).
+
 # Training Model Deteksi dari Dataset GODS EYE (#74)
 
 Pipeline v1: **dataset (SQLite)** → **export ZIP (YOLO)** → **train (Ultralytics)**

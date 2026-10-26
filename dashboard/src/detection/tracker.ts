@@ -1,40 +1,8 @@
-// ByteTrack PROPER — port TypeScript dari algoritma asli (#74).
-//
-// MENGGANTIKAN CentroidTracker (#60–#68). Dua temuan diagnosis #74:
-//   1. AKAR "box tidak ngelock" BUKAN asosiasi — melainkan RUANG KOORDINAT:
-//      sejak #68 frame ditangkap 960×540 (CAPTURE_RESIZE), bbox keluar dalam
-//      piksel BITMAP, tetapi DetectionOverlay menggambar dengan skala
-//      canvas/videoWidth (1920) → box SETENGAH ukuran & bergeser ke kiri-atas.
-//      Perbaikan ruang koordinat ada di workerDetector.detect() (skala output
-//      ke ruang video); tracker ini tetap bekerja di ruang bitmap (konsisten
-//      internal) — IoU/Kalman tidak peduli skala absolut.
-//   2. Tracker lama (centroid greedy + EMA velocity) rapuh saat oklusi/
-//      kendaraan bersilangan (ID switch) dan velocity-nya berisik → box
-//      "tidak realtime ngikutin". ByteTrack: Kalman filter + asosiasi IoU
-//      DUA TAHAP + birth/death + re-identifikasi via deteksi low-confidence.
-//
-// Referensi algoritma: Zhang et al., "ByteTrack: Multi-Object Tracking by
-// Associating Every Detection Box", ECCV 2022. Port ini mengikuti struktur
-// implementasi referensi (ifzhang/ByteTrack): predict → asosiasi tahap-1
-// (deteksi high-conf) → asosiasi tahap-2 (deteksi low-conf vs track yang
-// belum cocok, termasuk yang hilang) → lahirkan track baru → tandai hilang.
-//
-// ADAPTASI JUJUR untuk fps-rendah CCTV (bukan ByteTrack murni 30fps):
-// deteksi di sini ±4–10 fps, kendaraan bisa berpindah ~1 lebar box antar
-// frame → IoU murni sering 0. Tahap asosiasi memakai biaya hibrida:
-//   - IoU ≥ gate → biaya = 1 − IoU (jalur utama, seperti ByteTrack);
-//   - IoU < gate TAPI jarak pusat ≤ distGate → biaya sedikit di atas jalur
-//     IoU (fallback gerak-cepat; Hungarian tetap memilih optimum global);
-//   - selebihnya = terlarang.
-// Tanpa fallback ini, mobil cepat akan lahir sebagai track BARU tiap frame
-// (ID flicker) — justru gejala yang dikeluhkan Rama.
-//
-// Kontrak output TIDAK berubah (kompatibel DetectionOverlay & worker):
-// TrackedDetection { trackId, direction, stale, vx, vy, framePts } +
-// predictBbox() + PREDICT_CAP_S. vx/vy = piksel BITMAP per detik-WAKTU-VIDEO
-// (workerDetector yang menskala ke ruang video sebelum ke overlay).
-
+// ByteTrack associates YOLO observations. Pixel tracking and latency replay
+// live in motionTracker.ts; observed anchors must retain the raw model box.
 import type { Detection, VehicleDirection } from "./types";
+import { DETECTOR_PARSE_FLOOR, VEHICLE_POLICY } from "./vehicleConfig";
+import { coastDuration, INITIAL_SAMPLE_INTERVAL_SEC, updateSampleInterval } from "./trackingTiming";
 
 export interface TrackerOptions {
   /**
@@ -89,11 +57,11 @@ export interface TrackerOptions {
 
 export const DEFAULT_TRACKER_OPTIONS: TrackerOptions = {
   highConfThreshold: 0.4,
-  lowConfFloor: 0.15,
+  lowConfFloor: DETECTOR_PARSE_FLOOR,
   iouGateHigh: 0.2,
   iouGateLow: 0.3,
-  distGateHighPx: 200,
-  distGateLowPx: 120,
+  distGateHighPx: 45,
+  distGateLowPx: 25,
   maxTimeLostFrames: 30,
   graceFrames: 7,
   minDyPx: 8,
@@ -108,7 +76,7 @@ export const DEFAULT_TRACKER_OPTIONS: TrackerOptions = {
  * menggambar posisi beku (tidak mengekstrapolasi ke entah ke mana).
  * Diekspor agar overlay & uji memakai angka yang sama (warisan #68).
  */
-export const PREDICT_CAP_S = 3;
+export const PREDICT_CAP_S = 0.75;
 
 /** Detection yang sudah punya identitas track + arah + velocity (siap digambar). */
 export interface TrackedDetection extends Detection {
@@ -123,8 +91,19 @@ export interface TrackedDetection extends Detection {
   /** Velocity (piksel per detik-WAKTU-VIDEO, ruang bitmap). */
   vx: number;
   vy: number;
-  /** framePts (video.currentTime) saat track TERAKHIR dicocokkan deteksi. */
+  /** Video timestamp of the current Kalman prediction. */
   framePts: number;
+  /** Last real observation; independent of the current Kalman prediction. */
+  lastSeenPts: number;
+  observations: number;
+  reliable: boolean;
+  sampleIntervalSec: number;
+  /** Main thread measures actual video-time lag at result delivery. */
+  captureLagSec?: number;
+  /** Pixel-tracker cadence and the bounded gap it can bridge. */
+  motionIntervalSec?: number;
+  coastSec?: number;
+  presentationLagSec?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,9 +236,11 @@ class KalmanFilter {
   }
 
   /** Predict: x' = Fx, P' = FPFᵀ + Q. */
-  predict(): void {
+  predict(dt = 1): void {
+    for (let i = 0; i < 4; i++) this.f[i][i + 4] = dt;
     this.x = matMul(this.f, this.x);
-    this.p = matAdd(matMul(matMul(this.f, this.p), matTrans(this.f)), this.q);
+    this.p = matAdd(matMul(matMul(this.f, this.p), matTrans(this.f)),
+      this.q.map((row) => row.map((v) => v * Math.max(dt, 0.001))));
   }
 
   /** Update dengan measurement [cx,cy,w,h]. */
@@ -386,6 +367,8 @@ function pairCost(
    */
   distGatePx: number,
 ): number {
+  const areaRatio = (detBox[2] * detBox[3]) / (trackBox[2] * trackBox[3]);
+  if (!Number.isFinite(areaRatio) || areaRatio < 0.25 || areaRatio > 4) return FORBIDDEN_COST;
   const iou = iouXYWH(trackBox, detBox);
   if (iou >= iouGate) return 1 - iou;
   const d = centerDist(trackBox, detBox);
@@ -459,6 +442,7 @@ interface Track {
   timeSinceUpdate: number;
   /** Jumlah frame cocok beruntun (untuk klasifikasi arah). */
   hits: number;
+  highHits: number;
   lastConfidence: number;
   history: Array<{ cx: number; cy: number; pts: number }>;
   /** Velocity output (piksel bitmap / detik-waktu-video), EMA. */
@@ -469,15 +453,23 @@ interface Track {
   prevPts: number;
   /** framePts saat TERAKHIR dicocokkan deteksi (basis prediksi overlay). */
   lastSeenPts: number;
+  predictedPts: number;
+  lastBox: [number, number, number, number];
 }
 
 export class ByteTracker {
   private tracks: Track[] = [];
   private nextId = 1;
-  private highThresh: number;
+  private highThresh: number | null = null;
+  private previousPts = -1;
+  private sampleIntervalSec = INITIAL_SAMPLE_INTERVAL_SEC;
 
   constructor(private readonly opts: TrackerOptions = DEFAULT_TRACKER_OPTIONS) {
-    this.highThresh = opts.highConfThreshold;
+
+  }
+
+  private thresholdFor(label: string): number {
+    return this.highThresh ?? VEHICLE_POLICY[label as keyof typeof VEHICLE_POLICY]?.newTrackConfidence ?? this.opts.highConfThreshold;
   }
 
   /** Ambang tahap-1 — disinkron dari slider confidence UI (via worker). */
@@ -489,6 +481,8 @@ export class ByteTracker {
   reset(): void {
     this.tracks = [];
     this.nextId = 1;
+    this.previousPts = -1;
+    this.sampleIntervalSec = INITIAL_SAMPLE_INTERVAL_SEC;
   }
 
   /**
@@ -499,6 +493,11 @@ export class ByteTracker {
    */
   update(detections: Detection[], framePts: number): TrackedDetection[] {
     const o = this.opts;
+    if (!Number.isFinite(framePts)) return [];
+    if (this.previousPts >= 0 && (framePts < this.previousPts || framePts - this.previousPts > 3)) this.reset();
+    if (this.previousPts >= 0) this.sampleIntervalSec = updateSampleInterval(this.sampleIntervalSec, framePts - this.previousPts);
+    this.previousPts = framePts;
+    this.tracks = this.tracks.filter((t) => framePts - t.lastSeenPts <= 3);
 
     // Asosiasi per label (mobil≠motor tidak boleh tertukar ID).
     const labels = new Set<string>();
@@ -516,13 +515,14 @@ export class ByteTracker {
       (t) => t.timeSinceUpdate <= o.maxTimeLostFrames,
     );
 
-    // Render: track aktif + yang baru hilang dalam masa tenggang (stale,
-    // posisi prediksi Kalman, digambar redup oleh overlay).
+    // Confirmed tracks bridge brief misses. Grace follows measured inference
+    // cadence, rather than a fixed cutoff shorter than a single slow inference.
     const result: TrackedDetection[] = [];
     for (const t of this.tracks) {
       const isStale = t.state === "lost";
-      if (isStale && t.timeSinceUpdate > o.graceFrames) continue;
-      const [x, y, w, h] = t.kf.box;
+      if (isStale && (t.hits < 2 || t.timeSinceUpdate > o.graceFrames ||
+        framePts - t.lastSeenPts > this.coastFor(t))) continue;
+      const [x, y, w, h] = isStale ? t.kf.box : t.lastBox;
       result.push({
         classId: t.classId,
         label: t.label,
@@ -534,7 +534,12 @@ export class ByteTracker {
         stale: isStale,
         vx: t.vx,
         vy: t.vy,
-        framePts: t.lastSeenPts,
+        // kf.box has ALREADY been predicted to this frame, never predict twice.
+        framePts,
+        lastSeenPts: t.lastSeenPts,
+        observations: t.hits,
+        reliable: t.hits >= 4 && t.highHits >= 2,
+        sampleIntervalSec: this.sampleIntervalSec,
       });
     }
     // Urutan stabil untuk overlay: ID menaik.
@@ -562,15 +567,18 @@ export class ByteTracker {
     const o = this.opts;
 
     // 1) Prediksi SEMUA track (termasuk yang hilang — Kalman jalan terus).
-    for (const t of groupTracks) t.kf.predict();
+    for (const t of groupTracks) {
+      t.kf.predict(Math.max(0.001, framePts - t.predictedPts));
+      t.predictedPts = framePts;
+    }
 
     // 2) Bagi deteksi: tinggi (tahap-1) vs rendah (tahap-2, re-id).
     const high: Detection[] = [];
     const low: Detection[] = [];
     for (const d of groupDets) {
       // Di bawah lantai = noise model, bukan kandidat (kontrak detector).
-      if (d.confidence < o.lowConfFloor) continue;
-      (d.confidence >= this.highThresh ? high : low).push(d);
+      if (d.confidence < Math.min(o.lowConfFloor, this.thresholdFor(d.label))) continue;
+      (d.confidence >= this.thresholdFor(d.label) ? high : low).push(d);
     }
 
     const refreshed = new Set<Track>();
@@ -592,11 +600,17 @@ export class ByteTracker {
     // Hungarian (biaya global minimum) + IoU tetap memprioritaskan pasangan
     // terdekat, dan kerusakan ID-switch kronis (pasti) lebih buruk daripada
     // risiko salah-re-id (kadang-kadang).
-    const gateFor = (t: Track, basePx: number): number =>
-      Math.max(
-        basePx,
-        o.maxSpeedPxS * Math.max(0, framePts - t.lastSeenPts),
-      );
+    const gateFor = (t: Track, basePx: number): number => {
+      const dt = Math.max(0, framePts - t.lastSeenPts);
+      // Established tracks are already predicted. Gating by the ENTIRE possible
+      // travel distance again lets them steal nearby vehicles after an occlusion.
+      if (t.hits >= 3) {
+        const box = t.kf.box;
+        const uncertainty = 30 + Math.hypot(t.vx, t.vy) * 0.2;
+        return Math.max(12, Math.min(basePx, Math.hypot(box[2], box[3]) * 0.65)) + uncertainty * dt;
+      }
+      return Math.max(basePx, o.maxSpeedPxS * dt);
+    };
 
     // 3) TAHAP-1: semua track (aktif + hilang) ↔ deteksi high-confidence.
     const s1 = associate(
@@ -615,11 +629,11 @@ export class ByteTracker {
       refreshed.add(tr);
     }
 
-    // 4) TAHAP-2: track AKTIF yang gagal tahap-1 ↔ deteksi low-confidence —
-    //    oklusi parsial / kendaraan jauh yang skornya turun tidak membunuh
-    //    track (ini inti "associating every detection box" ByteTrack).
+    // 4) A recently lost, confirmed track may recover through a weak detection.
+    // Older lost tracks are excluded so low-confidence noise cannot revive them.
     const s1UnmatchedActive = groupTracks.filter(
-      (t, i) => t.state === "active" && !s1MatchedTrackIdx.has(i),
+      (t, i) => !s1MatchedTrackIdx.has(i) && (t.state === "active" ||
+        (t.hits >= 2 && framePts - t.lastSeenPts <= this.coastFor(t) + this.sampleIntervalSec)),
     );
     const s2 = associate(
       s1UnmatchedActive.map((t) => t.kf.box),
@@ -656,6 +670,7 @@ export class ByteTracker {
         state: "active",
         timeSinceUpdate: 0,
         hits: 1,
+        highHits: 1,
         lastConfidence: d.confidence,
         history: [{ cx, cy, pts: framePts }],
         vx: 0,
@@ -664,14 +679,21 @@ export class ByteTracker {
         prevCy: cy,
         prevPts: framePts,
         lastSeenPts: framePts,
+        predictedPts: framePts,
+        lastBox: [...d.bbox],
       });
     }
   }
 
   /** Terapkan hasil asosiasi ke track: Kalman update + velocity + riwayat. */
+  private coastFor(track: Track): number {
+    return coastDuration(this.sampleIntervalSec, track.hits >= 4 && track.highHits >= 2);
+  }
+
   private refreshTrack(t: Track, det: Detection, framePts: number): void {
     const o = this.opts;
     const [x, y, w, h] = det.bbox;
+    t.lastBox = [...det.bbox];
     t.kf.update([x + w / 2, y + h / 2, w, h]);
     const c = t.kf.center;
     // Velocity output dari posisi TERFILTER (jauh lebih halus daripada
@@ -681,7 +703,9 @@ export class ByteTracker {
     const ivy = (c.cy - t.prevCy) / dt;
     const sp = Math.hypot(ivx, ivy);
     const k = sp > o.maxSpeedPxS ? o.maxSpeedPxS / sp : 1;
-    const a = o.velocityAlpha;
+    // The first motion measurement must not start at half speed, otherwise
+    // newly acquired vehicles get a stationary/lagging box for another frame.
+    const a = t.hits === 1 ? 1 : o.velocityAlpha;
     t.vx += a * (ivx * k - t.vx);
     t.vy += a * (ivy * k - t.vy);
     t.prevCx = c.cx;
@@ -690,6 +714,7 @@ export class ByteTracker {
     t.timeSinceUpdate = 0;
     t.state = "active";
     t.hits += 1;
+    if (det.confidence >= this.thresholdFor(det.label)) t.highHits++;
     t.lastConfidence = det.confidence;
     t.lastSeenPts = framePts;
     t.history.push({ cx: c.cx, cy: c.cy, pts: framePts });
@@ -725,8 +750,9 @@ export function predictBbox(
   vx: number,
   vy: number,
   dtSec: number,
+  limitSec = PREDICT_CAP_S,
 ): [number, number, number, number] {
-  const dt = Math.min(Math.max(dtSec, 0), PREDICT_CAP_S);
+  const dt = Math.min(Math.max(dtSec, 0), limitSec);
   if (dt === 0 || (vx === 0 && vy === 0)) return bbox;
   const dx = vx * dt;
   const dy = vy * dt;

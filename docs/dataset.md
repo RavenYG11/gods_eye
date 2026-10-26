@@ -1,3 +1,5 @@
+> **Arsip versi sebelumnya.** Fitur dataset sudah dihapus; tracking terbaru memakai worker optical flow. Lihat [tracking-piksel.md](tracking-piksel.md) dan [README](../README.md).
+
 # Dataset Kendaraan GODS EYE — Seed Awal
 
 **Keputusan Rama (final):** 2026-10-16 — Rama mengirim 2 crop screenshot CCTV

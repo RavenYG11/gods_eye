@@ -19,8 +19,6 @@ export function DetectionPanel({ detection }: Props) {
     provider,
     counts,
     error,
-    threshold,
-    setThreshold,
     toggle,
     retry,
   } = detection;
@@ -60,6 +58,7 @@ export function DetectionPanel({ detection }: Props) {
       {status === "error" && (
         <div className="dp-error" role="alert">
           <p>Model deteksi gagal dimuat.</p>
+          <p>{error}</p>
           <button
             type="button"
             className="btn"
@@ -78,40 +77,21 @@ export function DetectionPanel({ detection }: Props) {
               bottleneck langsung dari screenshot (bukan tebakan). */}
           {inferMs !== null && ` · ${inferMs}ms`}
           {provider !== null && ` · ${provider}`}
-          {Object.entries(counts).map(([label, n]) => (
-            <span key={label}>
-              {" "}
-              · {label}: {n}
-            </span>
-          ))}
+          {detection.trackingFps !== null && ` · tracking ${detection.trackingFps} fps`}
         </p>
+      )}
+
+      {status === "ready" && enabled && (
+        <div className="dp-note" aria-live="polite">
+          <p>Terlihat: mobil {counts.mobil ?? 0} · motor {counts.motor ?? 0}</p>
+          <p>Masuk Bekasi (sesi ini): mobil {detection.enteredCounts.mobil ?? 0} · motor {detection.enteredCounts.motor ?? 0}</p>
+        </div>
       )}
 
       {status === "off" && (
         <p className="dp-note">
           Deteksi nonaktif — overlay box kendaraan disembunyikan.
         </p>
-      )}
-
-      {/* #62/#71: slider ambang confidence (0,10–0,90) — live ke worker
-          via setThreshold, tanpa reload model. Mitigasi false positive
-          (naikkan bila box ngaco, turunkan bila kendaraan tak terdeteksi). */}
-      {(status === "ready" || status === "off") && (
-        <div className="dp-threshold">
-          <label htmlFor="thresholdRange">Confidence</label>
-          <input
-            id="thresholdRange"
-            type="range"
-            min={0.1}
-            max={0.9}
-            step={0.05}
-            value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
-            title="Ambang confidence deteksi (0,10–0,90) — berlaku langsung"
-            disabled={!enabled}
-          />
-          <output>{threshold.toFixed(2)}</output>
-        </div>
       )}
 
       <button
@@ -124,8 +104,10 @@ export function DetectionPanel({ detection }: Props) {
       </button>
 
       <p className="dp-hint">
-        Seed dataset: <span className="mono">dashboard/public/dataset/</span>{" "}
-        (docs/dataset.md)
+        Fokus ruas menuju Bekasi (ke atas). Area masuk kanan bawah diprioritaskan,
+        termasuk kendaraan yang baru terlihat sebagian. Kendaraan di seberang
+        median disembunyikan. Hitungan bertambah sekali setelah gerak ke atas
+        terkonfirmasi. Hitungan sesi diulang saat seek, memuat ulang, atau menyalakan ulang deteksi.
       </p>
     </aside>
   );

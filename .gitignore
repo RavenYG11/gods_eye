@@ -9,3 +9,8 @@ dashboard/node_modules/.tmp/
 .DS_Store
 # #72: database SQLite dataset (dibuat otomatis saat backend jalan — JANGAN di-commit)
 backend/data/
+.cache/
+.playwright-cli/
+output/
+artifacts/
+dashboard/public/ort/

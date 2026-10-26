@@ -2,7 +2,7 @@
 // App membuat SATU engine dan membagikannya ke StreamPlayer + ConnectionLog
 // lewat props — satu sumber kebenaran untuk status, metrik, dan log.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CameraConfig } from "../config/cameras";
 import {
   StreamHealth,
@@ -29,6 +29,8 @@ export interface StreamSession {
    * watchdog pemulihan. Pengganti pola guardDvrWindow()+play() (#69).
    */
   resumePlayback: () => void;
+  pausePlayback: () => void;
+  setDetectionReady: (ready: boolean) => void;
 }
 
 const INITIAL: StreamSnapshot = {
@@ -59,6 +61,7 @@ export function useStreamSession(camera: CameraConfig): StreamSession {
     engineRef.current = new StreamHealth();
   }
   const [snap, setSnap] = useState<StreamSnapshot>(INITIAL);
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -66,19 +69,20 @@ export function useStreamSession(camera: CameraConfig): StreamSession {
     const off = engine.subscribe(setSnap);
     return () => {
       off();
-      engine.detach();
     };
   }, []);
 
   // attachVideo stabil: engine & camera tidak berubah selama sesi v0.1.
-  const [attachVideo] = useState(
-    () => (el: HTMLVideoElement | null) => {
-      const engine = engineRef.current;
-      if (el && engine) {
-        engine.attach(el, camera);
-      }
-    },
-  );
+  const attachVideo = useCallback((el: HTMLVideoElement | null) => setVideo(el), []);
+  // The effect owns the connection, including React StrictMode setup/cleanup.
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!video || !engine) return;
+    engine.attach(video, camera);
+    return () => engine.detach();
+  }, [video, camera]);
+  const pausePlayback = useCallback(() => engineRef.current?.pausePlayback(), []);
+  const setDetectionReady = useCallback((ready: boolean) => engineRef.current?.setDetectionReady(ready), []);
 
   const [retry] = useState(() => () => {
     engineRef.current?.retry();
@@ -111,5 +115,7 @@ export function useStreamSession(camera: CameraConfig): StreamSession {
     guardDvrWindow,
     seekTo,
     resumePlayback,
+    pausePlayback,
+    setDetectionReady,
   };
 }

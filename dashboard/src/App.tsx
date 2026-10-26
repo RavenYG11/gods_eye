@@ -17,7 +17,6 @@ import { useDetection } from "./lib/useDetection";
 import { downloadTelemetryJson } from "./lib/telemetry";
 import { CameraSelector } from "./components/CameraSelector";
 import { ConnectionLog } from "./components/ConnectionLog";
-import { DatasetPanel } from "./components/DatasetPanel";
 import { DetectionPanel } from "./components/DetectionPanel";
 import { StreamPlayer } from "./components/StreamPlayer";
 import "./styles.css";
@@ -56,7 +55,7 @@ export default function App() {
   const camera = CAMERAS[0]; // v0.1 dikunci 1 kamera
   const session = useStreamSession(camera);
   // #71: hook deteksi diangkat ke App — dipakai StreamPlayer (overlay box)
-  // + DetectionPanel (indikator/slider/toggle di card kanan). Video element
+  // + DetectionPanel (indikator/toggle di card kanan). Video element
   // diteruskan StreamPlayer via videoSinkRef.
   // #69: paused dari event nyata <video> — loop inferensi berhenti saat
   // video dijeda (frame sama berulang = buang CPU).
@@ -66,6 +65,9 @@ export default function App() {
     session.snap.paused,
   );
   const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    session.setDetectionReady(detection.status !== "loading");
+  }, [detection.status, session.setDetectionReady]);
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 1000);
@@ -102,11 +104,8 @@ export default function App() {
             detection={detection}
             videoSinkRef={videoSinkRef}
           />
-          {/* #72: kolom kanan = card "Deteksi kendaraan" + card
-              "Kelola Dataset" (menumpuk vertikal). */}
           <div className="side-col">
             <DetectionPanel detection={detection} />
-            <DatasetPanel />
           </div>
         </div>
 
@@ -122,19 +121,14 @@ export default function App() {
         <section className="cam-bar" aria-label="Informasi kamera">
           <CameraSelector />
           <div className="chips" aria-label="Spesifikasi stream">
-            <span className="chip">1080p</span>
+            <span className="chip">{session.snap.metrics.height ? `${session.snap.metrics.height}p` : "Resolusi …"}</span>
             <span className="chip">HLS</span>
-            <span className="chip">60fps</span>
+            <span className="chip">{session.snap.metrics.fps !== null ? `${session.snap.metrics.fps} fps` : "FPS …"}</span>
           </div>
         </section>
 
         <footer>
-          GODS EYE v0.1 — viewer 1 kamera CCTV Kota Bekasi · fullstack:
-          backend Node.js (reverse proxy + static) + frontend React
-          <br />
-          Acuan: <span className="mono">docs/arsitektur.md</span> (Sentot, #49)
-          · visual: <span className="mono">docs/mockup-dashboard.html</span>{" "}
-          (Prapto, #50 — varian 1 pilihan Rama)
+          GODS EYE · CCTV Kota Bekasi · Deteksi mobil dan motor
         </footer>
       </main>
     </>

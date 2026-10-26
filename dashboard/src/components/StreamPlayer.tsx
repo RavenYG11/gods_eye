@@ -16,13 +16,14 @@ import type { StreamSession } from "../lib/useStreamSession";
 import type { DetectionState } from "../lib/useDetection";
 import { StreamHealthBadge } from "./StreamHealthBadge";
 import { DetectionOverlay } from "./DetectionOverlay";
+import { bufferGoal } from "../lib/bufferPolicy";
 
 interface Props {
   session: StreamSession;
   camera: CameraConfig;
   /**
    * #71: state deteksi diangkat ke App — card "Deteksi kendaraan" di kanan
-   * video me-render indikator + slider confidence + toggle; StreamPlayer
+   * video me-render indikator + toggle; StreamPlayer
    * hanya memakai overlay box + status visible.
    */
   detection: DetectionState;
@@ -49,7 +50,7 @@ function formatDvrClock(totalSec: number): string {
 }
 
 export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props) {
-  const { snap, attachVideo, retry, seekTo, resumePlayback } = session;
+  const { snap, attachVideo, retry, seekTo, resumePlayback, pausePlayback } = session;
   // #71: prebuffering = jeda INTERNAL mesin (bukan user) — chip waktu &
   // tombol play memperlakukannya sebagai "sedang jalan".
   const { status, metrics, paused, playback, prebuffering } = snap;
@@ -58,6 +59,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
   const barRef = useRef<HTMLDivElement | null>(null);
   const scrubbingRef = useRef(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
+  useEffect(() => { if (status === "delay") setMetricsOpen(false); }, [status]);
   const [clock, setClock] = useState(() => formatJamWIB(Date.now()));
   /**
    * #74: rasio target SAAT drag (0..1) — feedback visual langsung 60fps
@@ -103,7 +105,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
       const pop = document.getElementById("metricsPop");
       const badge = document.getElementById("statusBadge");
       const target = e.target as Node;
-      if (pop && !pop.contains(target) && badge && !badge.contains(target)) {
+      if (pop && !pop.contains(target) && (!badge || !badge.contains(target))) {
         setMetricsOpen(false);
       }
     };
@@ -149,12 +151,14 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) {
+    if (snap.prebuffering) {
+      pausePlayback();
+    } else if (v.paused) {
       resume();
     } else {
-      v.pause();
+      pausePlayback();
     }
-  }, [resume]);
+  }, [resume, pausePlayback, snap.prebuffering]);
 
   // #70.1 — SCRUB DVR BAR (klik / drag / arrow keys). Kebijakan display-only
   // #69 DIBATALKAN atas permintaan Rama: bar kini interaktif. Target seek
@@ -360,7 +364,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
       {/* #60: overlay box kendaraan (canvas) — di atas video, di bawah badge. */}
       <DetectionOverlay
         getVideo={() => videoRef.current}
-        detections={detection.detections}
+        motion={detection.motion}
         visible={detVisible}
       />
 
@@ -424,7 +428,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
         <div className="overlay show" role="status">
           <div className="spinner" aria-hidden="true" />
           <h2>Memuat stream…</h2>
-          <p>Menghubungi kamera CCTV Kota Bekasi.</p>
+          <p>Mengisi cadangan video: {Math.max(0, gapSec).toFixed(0)} / {bufferGoal(playback.windowStart, playback.windowEnd, playback.pos, true).toFixed(0)} dtk.</p>
         </div>
       )}
 
@@ -433,8 +437,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
           <div className="spinner" aria-hidden="true" />
           <h2>Buffering…</h2>
           <p>
-            Menunggu data stream. Kondisi normal pada jaringan ini — gambar
-            akan lanjut otomatis begitu data tiba.
+            Mengisi ulang cadangan video: {Math.max(0, gapSec).toFixed(0)} dtk. Pemutaran akan lanjut otomatis.
           </p>
         </div>
       )}

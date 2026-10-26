@@ -1,26 +1,14 @@
-// Overlay deteksi kendaraan — kanvas di atas <video>.
-// Rujukan #60: WARNA BOX: BIRU = kendaraan ke ATAS, HIJAU = ke BAWAH
-// (siap untuk vehicle in/out counting — DB BELUM dibuat, visual dulu).
-//
-// #68: overlay kini berjalan pada FRAME-RATE VIDEO (requestAnimationFrame),
-// bukan pada frame-rate deteksi. Tiap track membawa velocity (vx, vy;
-// piksel per detik-waktu-video) + framePts terakhir terlihat — posisi box
-// diekstrapolasi TIAP frame: pos = bbox + v·(video.currentTime − framePts).
-// Deteksi boleh 1 fps; box tetap meluncur mulus 60fps mengikuti kendaraan.
-// dt dijepit [0, PREDICT_CAP_S=3 dtk] oleh predictBbox — lewat dari itu box
-// digambar beku di posisi terakhir (jujur, tidak "terbang").
-//
-// Kanvas pointer-events:none (klik tetap ke video), z-index 2: di atas video,
-// di bawah shimmer/overlay/badge. Kotak digambar dalam piksel frame sumber
-// (mis. 1920×1080) lalu diskala ke ukuran tampil video.
-
-import { useEffect, useRef } from "react";
-import { DIRECTION_COLORS, predictBbox } from "../detection";
-import type { Detection, TrackedDetection } from "../detection";
+// Boxes are measured by the independent pixel tracker. Only bridge the
+// last fraction of a video frame, never extrapolate an entire YOLO interval.
+import { useEffect, useRef, type MutableRefObject } from "react";
+import { DIRECTION_COLORS } from "../detection";
+import type { MotionSnapshot } from "../detection/motionTracker";
+import type { Detection } from "../detection";
+import { BoxPresenter } from "../detection/boxPresenter";
 
 interface Props {
   getVideo: () => HTMLVideoElement | null;
-  detections: Detection[];
+  motion: MutableRefObject<MotionSnapshot>;
   visible: boolean;
 }
 
@@ -28,7 +16,7 @@ function drawBox(
   ctx: CanvasRenderingContext2D,
   det: Detection,
   scale: number,
-  dim: boolean,
+  opacity: number,
 ): void {
   const [x, y, w, h] = det.bbox;
   const sx = x * scale;
@@ -37,15 +25,14 @@ function drawBox(
   const sh = h * scale;
   const color = DIRECTION_COLORS[det.direction ?? "unknown"];
 
-  // #68: track stale (tanpa deteksi segar frame ini) digambar sedikit redup —
-  // jujur bahwa posisinya hasil prediksi, bukan deteksi segar.
-  ctx.globalAlpha = dim ? 0.55 : 1;
+  // Pixel tracking keeps the box fully visible while evidence remains valid.
+  ctx.globalAlpha = opacity;
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.strokeRect(sx, sy, sw, sh);
 
-  // Chip label: "mobil 92% #3"
-  const text = `${det.label} ${Math.round(det.confidence * 100)}%${det.trackId ? ` #${det.trackId}` : ""}`;
+  // Vehicle identity; model confidence is not an accuracy percentage.
+  const text = `${det.label}${det.trackId ? ` #${det.trackId}` : ""}`;
   ctx.font = "600 11px system-ui, sans-serif";
   const pad = 4;
   const tw = ctx.measureText(text).width;
@@ -58,12 +45,8 @@ function drawBox(
   ctx.globalAlpha = 1;
 }
 
-export function DetectionOverlay({ getVideo, detections, visible }: Props) {
+export function DetectionOverlay({ getVideo, motion, visible }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // #68: ref agar loop rAF selalu membaca hasil deteksi TERBARU tanpa
-  // me-restart loop tiap ada hasil baru.
-  const detsRef = useRef(detections);
-  detsRef.current = detections;
 
   // Samakan ukuran kanvas dengan ukuran tampil video (termasuk fullscreen).
   useEffect(() => {
@@ -81,11 +64,7 @@ export function DetectionOverlay({ getVideo, detections, visible }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  // #68: LOOP PREDIKSI — gambar ulang tiap frame video (rAF), bukan tiap
-  // hasil deteksi. Box diekstrapolasi dari velocity track sehingga mengikuti
-  // kendaraan dengan mulus walau deteksi hanya 1–4 fps. Basis waktu =
-  // video.currentTime (bukan wall-clock): saat video buffering (freeze),
-  // box ikut freeze — benar, karena gambarnya pun diam.
+  // Read worker snapshots without rerendering React at the tracking frame rate.
   useEffect(() => {
     const canvas = canvasRef.current;
     const video = getVideo();
@@ -94,29 +73,28 @@ export function DetectionOverlay({ getVideo, detections, visible }: Props) {
     if (!ctx) return;
 
     let raf = 0;
+    const presenter = new BoxPresenter();
     const render = () => {
       raf = requestAnimationFrame(render);
       const v = getVideo();
       if (!v || v.videoWidth === 0) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const scale = canvas.width / v.videoWidth;
+      const scale = Math.min(canvas.width / v.videoWidth, canvas.height / v.videoHeight);
+      const offsetX = (canvas.width - v.videoWidth * scale) / 2;
+      const offsetY = (canvas.height - v.videoHeight * scale) / 2;
       const nowPts = v.currentTime;
-      for (const det of detsRef.current) {
-        const td = det as TrackedDetection;
-        // TrackedDetection selalu membawa vx/vy/framePts (kontrak #68);
-        // fallback aman bila bukan (mis. data lama).
-        const bbox =
-          typeof td.vx === "number" &&
-          typeof td.vy === "number" &&
-          typeof td.framePts === "number"
-            ? predictBbox(det.bbox, td.vx, td.vy, nowPts - td.framePts)
-            : det.bbox;
-        drawBox(ctx, { ...det, bbox }, scale, td.stale === true);
+      ctx.save();
+      ctx.translate(offsetX, offsetY);
+      presenter.begin(nowPts, new Set(motion.current.detections.map((d) => d.trackId)));
+      for (const det of motion.current.detections) {
+        const presentation = presenter.present(det, nowPts);
+        if (presentation) drawBox(ctx, { ...det, bbox: presentation.bbox }, scale, presentation.opacity);
       }
+      ctx.restore();
 
       // Legenda kecil — jujur: arah vertikal frame, bukan in/out gerbang.
-      const legend = "■ ke atas (biru) · ■ ke bawah (hijau)";
+      const legend = "Ruas menuju Bekasi · Biru: ke atas · Abu: diam / baru terlihat";
       ctx.font = "500 10px system-ui, sans-serif";
       const tw = ctx.measureText(legend).width;
       ctx.fillStyle = "rgba(4,6,11,.65)";

@@ -25,6 +25,9 @@ const detector = new OnnxVehicleDetector();
 const tracker = new ByteTracker();
 let ready = false;
 let busy = false;
+let resetVersion = 0;
+let lastPts = -1;
+let lastSize = "";
 
 function post(msg: WorkerResponse, transfer?: Transferable[]): void {
   workerSelf.postMessage(msg, transfer);
@@ -32,16 +35,14 @@ function post(msg: WorkerResponse, transfer?: Transferable[]): void {
 
 workerSelf.onmessage = (e: MessageEvent<WorkerRequest>) => {
   const msg = e.data;
-  if (msg.type === "init") {
-    void handleInit(msg.modelUrl, msg.fallbackUrl, msg.wasmBase);
+  if (msg.type === "reset") {
+    resetVersion++;
+    tracker.reset();
+    lastPts = -1;
     return;
   }
-  if (msg.type === "set-threshold") {
-    // #74: pesan "set-threshold" dari slider UI kini mengatur ambang TAHAP-1
-    // ByteTrack (deteksi "tinggi"), BUKAN threshold parser model. Parser
-    // model dikunci di DETECTOR_PARSE_FLOOR (lihat handleInit) agar tahap-2
-    // selalu punya deteksi low-confidence untuk re-identifikasi.
-    tracker.setHighThreshold(msg.threshold);
+  if (msg.type === "init") {
+    void handleInit(msg.modelUrl, msg.fallbackUrl, msg.wasmBase);
     return;
   }
   if (msg.type === "detect") {
@@ -51,7 +52,7 @@ workerSelf.onmessage = (e: MessageEvent<WorkerRequest>) => {
     // membalas "dropped" agar main thread langsung tahu ini BUKAN hasil.
     if (!ready || busy) {
       msg.frame.close();
-      post({ type: "dropped" });
+      post({ type: "dropped", requestId: msg.requestId });
       return;
     }
     busy = true;
@@ -105,13 +106,23 @@ async function handleDetect(
   // #68: ukur biaya SATU putaran worker (letterbox + inferensi + tracking)
   // agar bottleneck fps terbaca dari UI, bukan tebakan.
   const t0 = performance.now();
+  const version = resetVersion;
   try {
     const timestamp = Date.now();
     const raw = await detector.inferFromBitmap(frame, srcW, srcH, timestamp);
+    if (version !== resetVersion) {
+      post({ type: "dropped", requestId: msg.requestId });
+      return;
+    }
+    const size = `${srcW}x${srcH}`;
+    if (framePts <= lastPts || (lastPts >= 0 && framePts - lastPts > 3) || size !== lastSize) tracker.reset();
+    lastPts = framePts;
+    lastSize = size;
     // #68: framePts diteruskan ke tracker = basis waktu velocity & prediksi.
     const tracked = tracker.update(raw, framePts);
     post({
       type: "result",
+      requestId: msg.requestId,
       frame: {
         cameraId,
         framePts,
@@ -120,19 +131,11 @@ async function handleDetect(
         inferMs: Math.round(performance.now() - t0),
       },
     });
-  } catch {
+  } catch (err) {
     // inferFromBitmap melempar hanya bila model rusak/frame invalid —
     // kirim frame kosong agar overlay tidak macet di kotak lama.
-    post({
-      type: "result",
-      frame: {
-        cameraId,
-        framePts,
-        wallTime: Date.now(),
-        detections: [],
-        inferMs: Math.round(performance.now() - t0),
-      },
-    });
+    post({ type: "detect-error", requestId: msg.requestId,
+      message: err instanceof Error ? err.message : String(err) });
   } finally {
     frame.close();
   }

@@ -28,9 +28,10 @@ export default defineConfig({
     },
     proxy: {
       "/cctv": {
-        target: "https://eofficev2.bekasikota.go.id",
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/cctv/, ""),
+        target: "http://127.0.0.1:3000",
+      },
+      "/api": {
+        target: "http://127.0.0.1:3000",
       },
     },
   },

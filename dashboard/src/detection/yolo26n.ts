@@ -52,6 +52,7 @@ export function parseYolo26nOutput(
     lb: Letterbox;
     timestamp: number;
     confidenceThreshold?: number;
+    classMap?: Record<number, "mobil" | "motor">;
   },
 ): Detection[] {
   const threshold = opts.confidenceThreshold ?? CONFIDENCE_THRESHOLD;
@@ -65,7 +66,7 @@ export function parseYolo26nOutput(
     if (!(score >= threshold)) continue; // NaN pun gugur di sini
 
     const classId = Math.round(data[base + 5]);
-    const label = COCO_TO_VEHICLE[classId];
+    const label = (opts.classMap ?? COCO_TO_VEHICLE)[classId];
     if (!label) continue; // bukan motor/mobil → buang (koreksi Rama #62)
 
     const p1 = unletterbox(data[base], data[base + 1], opts.lb);
@@ -78,7 +79,7 @@ export function parseYolo26nOutput(
     const y2 = Math.min(opts.srcH, Math.max(p1.y, p2.y));
     const w = x2 - x;
     const h = y2 - y;
-    if (w <= 2 || h <= 2) continue;
+    if (![x, y, w, h, score].every(Number.isFinite) || w <= 2 || h <= 2) continue;
 
     const bbox: [number, number, number, number] = [x, y, w, h];
 
@@ -97,9 +98,9 @@ export function parseYolo26nOutput(
  * Preprocess: ImageData 640×640 RGBA → Float32Array NCHW ternormalisasi 0..1.
  * Layout NCHW = yang diharapkan model Ultralytics (riset #48 paket i5).
  */
-export function imageDataToNchw(img: ImageData): Float32Array {
+export function imageDataToNchw(img: ImageData, target?: Float32Array): Float32Array {
   const n = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE;
-  const out = new Float32Array(3 * n);
+  const out = target ?? new Float32Array(3 * n);
   const px = img.data;
   for (let i = 0; i < n; i++) {
     const o = i * 4;

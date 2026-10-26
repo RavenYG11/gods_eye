@@ -25,7 +25,7 @@ const CLASS: Record<StreamStatus, string> = {
 };
 
 export function StreamHealthBadge(props: Props) {
-  const { status, delaySec, attempt, countdownSec, metricsOpen, onToggleMetrics } =
+  const { status, attempt, countdownSec, metricsOpen, onToggleMetrics } =
     props;
 
   let label: string;
@@ -37,8 +37,7 @@ export function StreamHealthBadge(props: Props) {
       label = "● LIVE";
       break;
     case "delay":
-      label = `● DELAY · ±${delaySec} dtk`;
-      break;
+      return null;
     case "buffering":
       label = "◌ BUFFERING";
       break;

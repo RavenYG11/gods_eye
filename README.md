@@ -1,195 +1,164 @@
-# GODS EYE v0.1 — Dashboard CCTV Kota Bekasi
+# GODS EYE
 
-Viewer web **1 kamera** CCTV Bekasi (HLS, 1080p) — **fullstack**: backend Node.js
-(reverse proxy anti-CORS + static server) + frontend React **+ deteksi kendaraan (YOLO26n)**.
-Dibangun oleh Gunet (Software Engineer), Assignment #52 (dashboard) + #59 (backend)
-+ **#60 (anti-buffering delay + object detection)**, 15 Okt 2026.
+Dashboard CCTV Bekasi dengan stream HLS serta deteksi dan tracking mobil/motor.
+Backend Node.js + Express; frontend React + TypeScript.
 
-> Scope v0.1 **DIKUNCI** (Meeting #4 D1–D6): stream viewer 1 kamera saja.
-> **Perintah langsung Rama 15 Okt 2026 14:37 WIB** ("langsung bikin object
-> detectionnya") **MENCABUT larangan deteksi** — #60 membangun deteksi
-> kendaraan (YOLO26n, ONNX). Tanpa rekaman. Face recognition OUT OF SCOPE permanen.
-> Perintah Rama 15 Okt 2026 14:07 WIB ("kenapa ga fullstack, suruh gunet bikin backendnya")
-> membatalkan keputusan frontend-only — v0.1 kini fullstack (#59).
+## Menjalankan
 
-## Cara menjalankan di localhost (direkomendasikan)
+Gunakan Node.js 24 LTS. Dari root proyek:
 
-Ritual baku (berlaku sejak #74 — 16 Okt 2026):
-
-```bash
-git pull
-npm run setup    # dashboard: npm install + build · backend: npm install
-npm start        # → http://localhost:3000
+```powershell
+npm run setup
+npm start
 ```
 
-Sekali saja (pertama kali / bila model hilang): unduh bobot deteksi
-`scripts\unduh-model.bat` (Windows) atau `bash dashboard/scripts/unduh-model.sh`
-(Linux/Mac) → `dashboard/public/models/yolo26n.onnx` (tidak di-commit),
-lalu ulangi `npm run setup`. `npm run setup` mengingatkan bila model belum ada.
+Buka http://127.0.0.1:3000. Model default harus tersedia di
+`dashboard/public/models/yolo26n.onnx`. Jika belum ada:
 
-Buka **http://localhost:3000** — satu server melayani app + proksi stream
-(satu origin → **CORS hilang permanen**, dev maupun production).
-Detail: `backend/README.md`, `docs/runbook.md` §4.
-
-Mode dev UI (hot reload): `cd dashboard && npm run dev` → http://localhost:5173
-(proksi `/cctv` tetap tersedia via Vite).
-
-## Struktur
-
-```
-gods-eye/
-├── package.json                # ★ RITUAL (#74): npm run setup / npm start (root)
-├── scripts/check-model.mjs     # Pengingat bila yolo26n.onnx belum diunduh
-├── scripts/zip-project.mjs     # ★ Arsip SELURUH proyek → ../gods_eye.zip (pure Node, #75)
-├── backend/                    # ★ BACKEND (#59) — Node.js + Express
-│   ├── server.js               # Reverse proxy /cctv/* → server CCTV + serve dashboard/dist
-│   │                           # + API dataset (/api/dataset/*, /api/dataset/export #74)
-│   ├── lib/
-│   │   ├── dataset-db.js       # SQLite dataset (node:sqlite, #72/#73)
-│   │   └── zip.js              # ★ Penulis ZIP pure-Node untuk export YOLO (#74)
-│   ├── package.json            # express + http-proxy-middleware
-│   └── README.md               # Cara jalan backend + env var + batasan
-├── tools/train_yolo.py         # ★ Training YOLO dari export dataset → ONNX (#74)
-├── dashboard/                  # App utama (React 18 + Vite + TS + hls.js)
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── StreamPlayer.tsx      # <video> + overlay status + OSD + fullscreen
-│   │   │   ├── StreamHealthBadge.tsx # Badge LIVE/DELAY/BUFFERING/… + popover metrik
-│   │   │   ├── CameraSelector.tsx    # Disabled, 1 item (siap multi-kamera)
-│   │   │   └── ConnectionLog.tsx     # ★ Panel "Log koneksi" (instruksi Rama)
-│   │   ├── detection/              # ★ IMPLEMENTASI YOLO26n (#60, via kontrak DetectionPort)
-│   │   │   ├── types.ts            # Kontrak data (Detection, Detector, + direction)
-│   │   │   ├── vehicleConfig.ts    # Semua angka ajaib + URL model
-│   │   │   ├── yolo26n.ts          # Parse output [1,300,6] NMS-free, letterbox
-│   │   │   ├── tracker.ts          # ★ ByteTracker (#74): Kalman + IoU 2-tahap + birth/death
-│   │   │   ├── onnxDetector.ts     # Detector via ONNX Runtime WASM (di worker)
-│   │   │   ├── detection.worker.ts # Worker inferensi ~10fps, video 60fps tak block
-│   │   │   └── workerDetector.ts   # Pembungkus worker → Detector (main thread)
-│   │   ├── components/DetectionOverlay.tsx # Canvas box: BIRU=ke atas, HIJAU=ke bawah
-│   │   ├── lib/useDetection.ts     # Hook: worker lifecycle + loop tangkap frame
-│   │   ├── scripts/unduh-model.bat # ★ Unduh yolo26n.onnx (sekali, tidak di-commit)
-│   │   ├── scripts/copy-ort-wasm.mjs# Salin .wasm ORT → public/ort (prebuild)
-│   │   ├── config/cameras.ts       # SATU-SATUNYA tempat URL stream (selalu /cctv/… sejak #59)
-│   │   ├── lib/streamHealth.ts     # Mesin status + auto-reconnect + pencatat log
-│   │   ├── lib/useStreamSession.ts # Jembatan engine → React
-│   │   ├── lib/log.ts              # Tipe entri log + format WIB
-│   │   ├── App.tsx                 # Header + player + log + bar kamera
-│   │   └── styles.css              # Token visual 1:1 dari mockup
-│   ├── vite.config.ts              # base './' + server.proxy /cctv (mode dev)
-│   └── package.json
-├── experiments/                # Paket benchmark i5 (Magna) — bukan bagian build
-├── docs/                       # arsitektur.md (Sentot #49, + Addendum #59) + mockup (Prapto #50/#51)
-│                              # + akurasi-realistis.md (evaluasi jujur demo YOLO vs CCTV malam, #68)
-│                              # + training.md (pipeline training dataset → ONNX, #74)
-│                              # + dataset.md (kelola dataset + export, #72–#74)
-└── README.md                   # ← file ini
+```powershell
+dashboard\scripts\unduh-model.bat
+npm run build
+npm start
 ```
 
-## Arsip proyek (zip) + worker deteksi
+Sesudah mengubah kode frontend, jalankan `npm run build` dan muat ulang browser.
+Sesudah mengubah backend, restart `npm start`. Data pengguna tetap berada di
+`backend/data/dataset.db`; setup/build tidak menghapusnya.
 
-**Arsip:** dari folder `gods_eye`, jalankan `node scripts/zip-project.mjs` →
-menghasilkan `gods_eye.zip` SATU TINGKAT DI ATAS folder proyek (mis.
-`D:\gods_eye.zip` bila proyek di `D:\gods_eye`; parent dihitung dari lokasi
-script, bukan hardcode). Isi = seluruh proyek KECUALI `node_modules/**`,
-`.git/**`, `backend/data/**` (database runtime) dan `*.zip` di root proyek
-(pengaman run-ulang). Script pure Node tanpa dependency (memakai ulang
-`backend/lib/zip.js`); daftar exclude + ukuran hasil ditampilkan di stdout
-setiap run. Aman dijalankan ulang — hasil zip lama tidak ikut terkemas.
+## Playback
 
-**Worker deteksi — itu apa, buat apa:** seluruh pekerjaan deteksi kendaraan
-(inferensi YOLO26n via ONNX Runtime + tracking ByteTrack: Kalman filter,
-asosiasi IoU dua tahap, ID + arah + velocity) berjalan di dalam sebuah
-**Web Worker** (`dashboard/src/detection/detection.worker.ts`) — thread
-terpisah dari thread utama browser. Inferensi model itu BERAT (ratusan ms di
-CPU); bila dijalankan di thread utama, video 60fps akan patah-patah (UI
-jank). Dengan worker, video tetap mulus sementara deteksi berjalan 1–10fps di
-latar; main thread hanya menggambar box (`DetectionOverlay`) + mengekstrapolasi
-posisi antar-hasil deteksi memakai velocity track (basis waktu-video, jadi box
-ikut freeze dengan benar saat video buffering/pause).
+Saat awal, player mengisi buffer video dan menunggu warmup deteksi selesai.
+Target delay 24 detik; buffer awal 16 detik. Target buffer menyesuaikan jendela
+playlist yang pendek atau posisi seek dekat live. Setelah itu video diputar
+pada 1×, tanpa jeda proaktif dan tanpa mengejar live edge secara berkala.
 
-## Jejak keputusan (tiap pilihan bisa dirunut)
+Jika data benar-benar habis, player mengisi buffer ulang dengan status yang
+terlihat. Gangguan jaringan/upstream tetap bisa menyebabkan buffering.
+Menambah delay tidak dapat menggantikan bandwidth yang kurang secara terus-menerus.
+Pengaturan ada di `dashboard/src/lib/bufferPolicy.ts`.
 
-| Keputusan | Rujukan |
+Pause/resume, scrub DVR, fullscreen, dan toggle deteksi tersedia.
+Tombol **Unduh log playback** menyimpan posisi, buffer yang dapat diputar,
+delay sebenarnya, stall, dan dropped frames untuk pemeriksaan sesi.
+
+## Deteksi
+
+- Inferensi dan tracking berjalan di Web Worker. Satu frame diproses pada satu
+  waktu, tanpa antrean yang menambah keterlambatan.
+- WebGPU NHWC, WebGPU bawaan, dan WASM diukur saat awal; yang lebih cepat dipilih. Warmup
+  lebih lama merupakan bagian dari loading awal. Kegagalan satu provider
+  otomatis mencoba provider lain.
+- FPS yang tampil adalah laju hasil nyata, bukan FPS video. Target 10 FPS
+  merupakan batas capture, bukan jaminan kecepatan inferensi.
+- Timestamp dibekukan saat frame ditangkap. Hasil sebelum seek diabaikan;
+  tracker direset ketika waktu/resolusi berubah.
+- ByteTrack menghubungkan observasi YOLO. Worker gerak terpisah memakai
+  optical flow Lucas-Kanade bertingkat untuk mengukur posisi dan skala kendaraan
+  di antara hasil YOLO. Target pelacakan 25 fps, terpisah dari laju inferensi.
+  Mobil/motor pada ruas menuju Bekasi ditampilkan sejak observasi pertama,
+  termasuk diam, arah belum pasti, dan kendaraan sebagian di tepi frame.
+  Ruas seberang median dibuang sebelum asosiasi dan pada tracking; arah turun
+  yang telah terukur juga disembunyikan. Kalibrasi khusus kamera ada di
+  `dashboard/src/detection/targetRoad.ts`.
+- Riwayat grayscale dibatasi 2,8 detik/80 frame. Kotak YOLO yang terlambat
+  diselaraskan ke posisi kini. Track yang sudah terkunci memakai riwayat bbox
+  pada waktu capture, sehingga tidak mengulang seluruh optical flow.
+  Kotak yang lahir terpotong tepi frame langsung mengikuti ukuran observasi
+  berikutnya saat badan kendaraan masuk seluruhnya; smoothing normal kembali
+  dipakai setelah kendaraan lepas dari tepi.
+  Kendaraan baru diprioritaskan; replay aktif diselesaikan meskipun hasil YOLO
+  baru tiba, dengan satu hasil terbaru menunggu. Replay mengerjakan maksimal
+  delapan langkah/anggaran 4 ms sebelum memberi giliran pada frame gerak.
+- Acuan memakai kotak observasi asli, bukan posisi Kalman yang tertinggal.
+  Track yang hanya diprediksi tidak dipakai sebagai pengukuran baru.
+- Ambang kelahiran track tetap: mobil 0,35, motor 0,25. Observasi lemah
+  >=0,12 dapat menyambung track terkonfirmasi. Tidak ada slider confidence.
+- Kehilangan bukti piksel menghentikan pelacakan; kotak kedaluwarsa setelah
+  220-400 ms tanpa bukti piksel. Track naik yang konsisten dapat melewati
+  model miss sampai empat detik selama titik gambarnya masih terlacak.
+  Overlay menghaluskan koreksi dan menjembatani maksimal 80-240 ms sesuai cadence.
+- Biru = ke atas/masuk Bekasi, abu = diam/arah belum pasti pada ruas tujuan.
+- Panel memisahkan jumlah yang terlihat dan total masuk Bekasi pada sesi ini.
+  Hitungan bertambah sekali per identitas visual setelah minimal tiga pengukuran
+  gerak piksel selama 0,3 detik dan perpindahan naik >maks(4 px, 12% tinggi bbox)
+  pada gambar tracking. Seek, perubahan resolusi, diskontinuitas video >1 detik,
+  muat ulang atau menyalakan ulang deteksi mereset sesi; total belum disimpan.
+- Area masuk kanan bawah mendapat inferensi pertama dan setiap dua inferensi
+  (sebelumnya sekali dalam enam). Crop kiri dan kanan mencakup tinggi frame
+  penuh, ditambah satu overview dalam enam giliran. Ruang padding vertikal
+  dipakai untuk memulihkan cakupan motor tanpa mengecilkan skala crop mobil.
+  Satu inferensi per giliran. Kendaraan terpotong pada
+  batas asli frame dipertahankan; potongan di sambungan crop memakai view lain.
+- Objek minim fitur piksel tetap boleh tampil dari kotak model terbaru selama
+  300–800 ms mengikuti cadence. Kotak ini belum menjadi bukti arah/hitungan.
+- Badge Delay di kiri atas dihapus; kebijakan cadangan video tetap aktif.
+
+Model bawaan tetap YOLO26n COCO. Akurasi motor jauh, oklusi, malam, dan blur
+memerlukan pengukuran dengan anotasi frame CCTV. Confidence model tidak sama dengan persentase akurasi sistem.
+
+Model custom dengan urutan kelas `[mobil, motor]`:
+
+```powershell
+$env:VITE_DETECTOR_MODEL = 'models/gods-eye-custom.onnx'
+$env:VITE_DETECTOR_CLASSES = 'mobil,motor'
+npm run build
+```
+
+Output model harus `[1,300,6]` berupa `[x1,y1,x2,y2,confidence,classId]`.
+Pemetaan kelas wajib dinyatakan agar ID 0/1 model custom tidak salah dibaca
+sebagai ID 2/3 COCO.
+
+## Backend
+
+| Endpoint | Fungsi |
 |---|---|
-| React 18 + Vite + TS + hls.js | arsitektur.md §1 |
-| **Backend Node.js + Express (#59): reverse proxy `/cctv/*` → server CCTV + serve `dashboard/dist` + `GET /api/health`** — satu origin, CORS hilang permanen di semua environment | Perintah langsung Rama 15 Okt 2026 14:07 WIB; backend/README.md; runbook.md §1 |
-| `detection/` = implementasi YOLO26n via kontrak `Detector`/`DetectionPort`; dashboard tak pernah import model langsung | arsitektur.md §2; perintah Rama 15 Okt 2026 14:37 WIB |
-| **Anti-buffering: player sengaja dijaga ±45 dtk di belakang live edge** (trik web resmi Bekasi — #71 naikkan dari ±5 dtk karena cushion 5 dtk < ekor fetch 1 segmen lambat); info delay JUJUR tampil di panel Log koneksi + badge "● DELAY · ±N dtk" (strip kuning bawah video DIHAPUS #71) | temuan Rama 15 Okt 2026; arsitektur.md §4 |
-| Box deteksi: **BIRU = kendaraan ke atas, HIJAU = ke bawah** (arah dari delta y centroid); kelas: **motor, mobil** (#62: truk dihapus total per koreksi Rama 15 Okt 2026); box dirender dari tracker + persistensi ±0,7 dtk + smoothing EMA | assignment #60, #62 |
-| **#65 (bugfix 15 Okt 2026 ~19:00 WIB):** `useDetection.ts` memanggil `detector.setThreshold()` tapi method tidak ada di `WorkerVehicleDetector` → `npm run build` gagal (TS2339 ×2). Perbaikan: `setThreshold(threshold)` diimplementasi penuh — `WorkerVehicleDetector` forward pesan `set-threshold` ke worker → `OnnxVehicleDetector` menyimpan ambang → `parseYolo26nOutput` memfilter dengan `confidenceThreshold` live. Slider UI 0,10–0,90 kini benar-benar mengubah hasil deteksi (terverifikasi: tsc + vite build bersih, uji logika parser lolos) | laporan Rama 18:57 WIB; assignment #65 |
-| **#66 (bugfix 15 Okt 2026 ~19:22 WIB):** Rama lapor (1) buffering 80% padahal URL asli lancar, (2) player kurang lebar, (3) card menyusut saat DevTools dibuka. Diagnosis & perbaikan: (1) DUA akar — (a) seek manual `applyIntentionalDelay` (#60) tiap detik berkelahi dengan buffer internal hls.js → siklus seek/rebuffer (seek darurat `emergencyResync` hanya untuk drift > 60 dtk); offset ±5 dtk dialihkan ke NATIF hls.js (`liveSyncDuration: 5`, `liveMaxLatencyDuration: 30`, `maxLiveSyncPlaybackRate: 1` — diverifikasi di source hls.js 1.7.3); (b) proksi tanpa `agent` → http-proxy memaksa `Connection: close` + agent:false → TIAP .ts membayar handshake TLS + slow-start baru (akar ".ts 841KB makan 2–3 dtk"); diperbaiki via `https.Agent({keepAlive:true})` eksplisit. (2) Formula lebar `#62` (`min(100%,(100vh−200px)×16/9)`) diganti: `width:100%` (ikut kontainer) + `aspect-ratio:16/9` + `max-height:calc(100vh−120px)` (cadangan 200px terbukti over-konservatif; 120px = header ±58 + padding 20 + napas ±42) + `main` max-width 1120→1440px. (3) Lebar tidak lagi digantungkan ke tinggi viewport → DevTools tidak bisa menyusutkan card; `:fullscreen` dikecualikan dari max-height. Terverifikasi: tsc + vite build bersih, `node --check` backend | laporan Rama 19:22 WIB; assignment #66 |
-| **#67 (bugfix 15 Okt 2026 ~20:10 WIB):** Rama lapor (1) card lebar tapi video pillarbox (bar hitam kiri-kanan), (2) box kedip-kedip + jarang muncul (deteksi ±4,3 fps). Diagnosis berbasis bukti: (1) `max-height` memaksa card LEBIH LEBAR dari 16:9 saat viewport pendek → video `contain` tidak mengisi. Perbaikan: `width:min(100%, calc((100lvh−140px)×16/9))` + `aspect-ratio:16/9` — card SELALU tepat 16:9 → video mengisi sempurna tanpa bar/crop, overlay tetap akurat; `100lvh` stabil thd DevTools. (2) DUA akar: (a) `maxDistPx:90` berasumsi 10fps, padahal inferensi aktual ±4,3fps → kendaraan bergerak ±2,3× lebih jauh antar-frame → track tidak pernah cocok → `seen` tak pernah capai 2 → box tidak dirender ("jarang muncul") — TERBUKTI via uji logika (track pecah dengan 90px, utuh dengan 200px); diperbaiki ke 200px. (b) `minSeenToRender:2` menunda box 2 frame — permintaan eksplisit Rama "box langsung muncul" → diturunkan ke 1. Terverifikasi: tsc + vite build bersih, uji logika tracker lolos (muncul frame-1, track utuh, grace stale) | laporan Rama 20:10 WIB; assignment #67 |
-| **#68 (bugfix 15 Okt 2026 ~20:40 WIB):** Rama lapor (1) buffering jangka panjang (situs Bekasi lancar), (2) box tertinggal dari kecepatan mobil, (3) minta akurasi sedekat demo YOLO + izin pakai library tracker eksternal. Diagnosis & perbaikan: (1) OBSERVASI RAMA di situs Bekasi: player mulai beberapa detik DI BELAKANG ujung buffer dan TIDAK PERNAH mengejar live edge — selisih dibiarkan membesar (1 mnt+), tetap lancar. Pola #66 (`liveMaxLatencyDuration: 30` + `emergencyResync` drift >60 dtk) TERNYATA masih "mengejar edge": tiap drift >30 dtk hls.js MELOMPAT ke liveSyncPosition = seek = invalidasi buffer = SIKLUS REBUFFER. Perbaikan: `liveMaxLatencyDuration: Infinity` (catch-up natif MATI TOTAL), `emergencyResync` DIHAPUS → diganti PENJAGA JENDELA DVR (seek HANYA bila posisi play hampir kedaluwarsa dari playlist, data-driven dari `level.details.fragments`, target tetap edge−25 dtk, bukan ke tepi). Telemetri playback: ring buffer 2000 sampel @2 dtk (pos/bufEnd/edge/delay/gap/stalls) + tombol "Unduh log playback (JSON)" — bukti uji 10+ menit: kolom `gap` harus tumbuh/stabil. (2) DUA akar box tertinggal: (a) BUG TIMEOUT — worker membuang frame diam-diam saat sibuk → promise main thread menggantung sampai timeout 8 dtk → tiap timeout DIHITUNG sebagai "hasil" → fps palsu 0,1 + overlay dibersihkan tiap 8 dtk (persis screenshot Rama!). Perbaikan: worker membalas `dropped` eksplisit; timeout 8→30 dtk + flag `lastTimedOut` (tidak dihitung fps, tidak membersihkan overlay); inferensi dipercepat via rantai provider `webgl→wasm` (fallback otomatis) + capture 960×540 (transfer 8MB→2MB); `inferMs` + provider tampil live di chip UI (pengukuran, bukan tebakan). (b) PREDIKSI VELOCITY — tiap track menyimpan vx/vy (px/detik-waktu-video, EMA α=0,4, dijepit 800px/s); pencocokan ke POSISI PREDIKSI (ala langkah predict ByteTrack, tanpa library); overlay jalan di rAF 60fps mengekstrapolasi `bbox + v·(video.currentTime − framePts)` — box meluncur mulus walau deteksi 1 fps; dt dijepit 3 dtk; basis waktu-video (freeze saat buffering = benar). ByteTrack/DeepSORT TIDAK dipakai: diagnosis menunjukkan asosiasi bukan masalahnya; predict-step 30 baris cukup, tanpa dependensi, tetap offline. (3) AKURASI JUJUR: demo YOLO = siang, dekat, jernih; CCTV = malam, jauh, motion blur — tidak apple-to-apple. Yang diperbaiki: box basi (prediksi), threshold 0,5→0,4 (kendaraan jelas malam skor 51–54%, nyaris gugur di 0,5), slider tetap ada. Yang TIDAK: fine-tuning 1 gambar (overfit, dilarang tegas). Terverifikasi: tsc + vite build bersih, uji logika tracker lolos | laporan Rama 20:40 WIB; assignment #68 |
-| **#68 (bugfix 15 Okt 2026 ~20:40 WIB):** Rama lapor (1) buffering berulang, (2) box tertinggal jauh dari kendaraan, (3) akurasi di bawah ekspektasi demo YOLO. Diagnosis & perbaikan: (1) `liveMaxLatencyDuration: 30` (#66) TERBUKTI masih "mengejar edge" — diverifikasi dari source hls.js 1.7.3: bila `currentTime < end − maxLatency`, hls.js SEEK KE liveSyncPosition (tepi!) → tiap drift > 30 dtk player "ditarik" ke tepi = buffer tipis = siklus rebuffer. Perbaikan: `liveMaxLatencyDuration: Infinity` (catch-up natif MATI TOTAL — player tidak pernah mengejar live edge, gap dibiarkan membesar ala situs Bekasi); `emergencyResync()` DIHAPUS → diganti **penjaga jendela DVR** (`dvrWindowGuard()`): seek HANYA bila posisi hampir kedaluwarsa dari playlist (data `level.details.fragments`), target tetap edge − 25 dtk. **Telemetri playback** (ring buffer 2000 sampel @2 dtk: pos/bufEnd/edge/delay/gap/stalls) + tombol "Unduh log playback (JSON)" di popover metrik = bukti uji 10+ menit. (2a) **Akar 0,1 fps DITEMUKAN:** worker membuang frame DIAM-DIAM saat sibuk → promise menggantung sampai timeout 8 dtk → tiap timeout dihitung "hasil" → fps palsu 0,1. Perbaikan: pesan `"dropped"` eksplisit, timeout 8→30 dtk, rantai provider **`webgl → wasm`**, capture 960×540, `inferMs` tampil di chip UI. (2b) **Prediksi gerakan:** velocity (vx, vy) per track + overlay jalan di frame-rate video (rAF) via `predictBbox()` — box meluncur mulus mengikuti kendaraan; TANPA library eksternal (diagnosis: asosiasi bukan masalah). (3) Evaluasi jujur: `docs/akurasi-realistis.md` — batas realistis CCTV malam vs demo siang; LARANGAN TEGAS: tidak ada fine-tuning 1 gambar (overfit). Terverifikasi: `npm run build` bersih | laporan Rama 20:40 WIB; assignment #68; arsitektur.md §2, §4 |
-| Bobot `.onnx` tidak di-commit (`.gitignore`); unduh via `scripts/unduh-model.*`; fallback PicoDet = slot kosong (format belum terverifikasi) | arsitektur.md §2, §5 |
-| **#69 (fitur 15 Okt 2026 ~20:55 WIB):** Rama minta kontrol playback: tombol stop/play + tampilan durasi/waktu. Digabung di atas #68 (belum di-push), push sekali nanti. Implementasi: (1) tombol **#playBtn** (▶/❚❚) di kiri tombol deteksi — toggle `video.play()/pause()`, ikon mengikuti event video play/pause (langsung, bukan tebakan); klik video kini juga toggle (standar pemutar). (2) **Chip waktu** kiri bawah: LIVE HLS tidak punya durasi (Infinity) → yang ditampilkan = offset dari live edge (`−N dtk dari live`, atau `LIVE` bila ≤3 dtk) + indikator `DIJEDA` saat pause; data dari snapshot `playback` {pos, bufStart, bufEnd, edge, windowStart} (refresh tiap 1 dtk via tickDelay; delay = edge − pos dihitung di UI). (3) **Progress bar jendela DVR**: strip tipis 200px di atas chip waktu — bar = jendela DVR [windowStart..liveEdge], penanda putih = posisi play; indikator saja (live, bukan scrubber). (4) Saat pause: overlay & tracker ikut freeze OTOMATIS karena basis waktu-video `video.currentTime` (#68); worker dilewati saat `video.paused` (hemat CPU, box tetap beku konsisten). (5) Resume dari pause lama: `dvrWindowGuard()` #68 sudah menanganinya — posisi yang hampir kedaluwarsa dilompat ke edge−25 dtk TANPA seek brutal/rebuffer. Styling dark theme konsisten (mono, chip, blur). Terverifikasi: tsc + vite build bersih | permintaan Rama 20:55 WIB; assignment #69 |
-| Header COOP/COEP di backend + Vite dev (syarat SharedArrayBuffer untuk ORT WASM multi-thread) | pola Ventra 2026-10-14 |
-| **#70 (bugfix 15 Okt 2026 ~21:22 WIB):** Rama lapor 5 bug setelah tes #68+#69: (1) DVR bar tidak bisa di-scrub — kebijakan display-only #69 DIBATALKAN atas permintaan eksplisit; bar kini interaktif: klik/drag/arrow-keys/Home/End → `seekTo()` dijepit ke [windowStart+1 .. fragEnd−0,5], `hls.startLoad()` pasca-seek; masa tenggang 30 dtk agar guard DVR tidak langsung menarik maju posisi scrub. (2) Bar "mentok" tidak update — AKAR: `tickDelay()` hanya `emit()` saat status berubah; saat delay stabil (mis. "DELAY ±16 dtk" terus) UI tidak pernah dapat data playback baru → bar & chip beku. Perbaikan: `emit()` TIAP DETIK setelah `updatePlaybackInfo()`. (3) Resume RUSAK (kritis): jeda di ujung → play → stuck buffering. Perbaikan: `resumePlayback()` — guard DVR + `clampToDvrWindow()` (paksa ke edge−25 dtk bila posisi sudah DI LUAR jendela) + `hls.startLoad()` + watchdog 4 dtk (`recoverMediaError()` bila masih macet); guard DVR tidak lagi jalan saat paused (menarik frame yang dilihat = salah). (4) Tombol unduh log playback tidak ketemu — kini ada DUA tempat jelas: header panel Log koneksi (di samping "Bersihkan") + popover metrik; helper terpusat `lib/telemetry.ts`. (5) Slider confidence hilang — dikembalikan (0,10–0,90, step 0,05, live ke `setThreshold` #65); CSS `.det-threshold` sudah ada sejak #62. Tambahan Rama 21:24: angka durasi tepat di bawah bar (`dvr-time`, monospace 10px): "posisi / panjang jendela" (mm:ss). Terverifikasi: tsc + vite build bersih | laporan Rama 21:22 WIB; assignment #70 |
-| **#71 (7 perbaikan 16 Okt 2026 ~09:33 WIB):** Rama kirim 8 screenshot + 7 permintaan setelah tes #70. (1) **Layout:** slider confidence + indikator deteksi PINDAH dari dalam video ke card BARU "Deteksi kendaraan" di kanan video (responsif: menumpuk di layar ≤1100px); card video bersih (hanya video + DVR bar + kontrol play); `useDetection` diangkat ke App. (2) **Tooltip delay di DVR bar DIHAPUS TOTAL** (`title` pada bar/chip/angka waktu). (3) **DVR bar DIPERPANJANG** — lebar penuh area video (dulu 280px). (4) **Dataset seed:** 2 crop kiriman Rama → `dashboard/public/dataset/` (`motor-1.png` 64×117, `mobil-1.png` 126×92) + `dataset.json` + `docs/dataset.md` (JUJUR: 1 sampel/kelas = seed referensi/QA, bukan training set; konvensi `motor-2.png`, `mobil-2.png` dst); folder dataset dikecualikan dari ignore (disetujui manajer). (5) **Strip kuning delay DIHAPUS** — info "tertinggal ±N dtk dari live" pindah ke panel Log koneksi sebagai baris ringkasan. (6) **Buffering — AKAR DITEMUKAN (berbasis bukti kode):** `liveSyncDuration: 5` → hls.js menargetkan posisi TEPAT 5 dtk di belakang live edge; cushion 5 dtk < ekor fetch satu segmen lambat (`fragLoadingMaxRetry: 4` × `fragLoadingRetryDelay: 2000` = 8 dtk+) → tiap jitter = event `waiting` = overlay "Buffering…" = "dashboard ngelag padahal situs Bekasi lancar" (situs Bekasi pakai cushion puluhan detik). Perbaikan: `liveSyncDuration: 45`, `maxBufferLength: 120`, `maxMaxBufferLength: 600`, `backBufferLength: 90`, `DVR_SAFE_BEHIND_SEC` 25→45 (selaras cushion); **penjaga prebuffer internal**: bila gap (bufEnd−pos) < 8 dtk → `video.pause()` agar hls.js mengisi buffer sampai ≥30 dtk lalu play — tanpa overlay spinner (flag `prebuffering` di snapshot agar chip tidak tampil "DIJEDA"); timeout 25 dtk → kembali ke jalur buffering normal. (7) **Angka durasi:** denominator = LIFETIME sejak tab dibuka (reset hanya saat tab di-close/restart) — "00:46 / 12:03"; posisi tetap posisi playback dalam jendela DVR. Terverifikasi: tsc 0 error + vite build sukses | laporan Rama 16 Okt 2026 09:33 WIB; assignment #71 |
-| **#72 (fitur 16 Okt 2026 ~10:17 WIB; FINAL ~10:18 WIB — DATABASE):** Panel **"Kelola Dataset"** di kolom kanan (di bawah card "Deteksi kendaraan") — tambah sampel kendaraan sendiri: (1) **Upload file** (multiple, `accept="image/*"`), (2) **Paste gambar** (klik area paste → `Ctrl+V`, tangkap `clipboardData`; bonus: drag-and-drop). Setiap gambar wajib berlabel **mobil/motor** (segmented control, default mobil). Validasi: hanya png/jpg/webp, maks 5 MB/file, tolak duplikat (SHA-256). **Keputusan final Rama: gambar disimpan di SQLite** (`backend/data/dataset.db` via `node:sqlite` bawaan Node ≥22.5 — #73, di-gitignore) — BUKAN file; pendekatan file-based awal dibatalkan & dihapus. **Backend** (`backend/lib/dataset-db.js` + endpoint di `server.js`): `POST /api/dataset` `{label, source, dataUrl}` → `201 {id}`; `GET /api/dataset` (metadata, tanpa blob); `GET /api/dataset/:id/image` (biner); `DELETE /api/dataset/:id` (seed dilindungi → 403). Seed-on-first-run mengimpor `motor-1.png`/`mobil-1.png`. **Frontend** (`dashboard/src/lib/dataset.ts` — satu-satunya jalur akses): `listDataset()`, `getDatasetImageUrl(id)` (objectURL cache+revoke), `uploadDatasetImage()`, `deleteDatasetImage()`. UI: grid thumbnail (badge label, hapus per item, konfirmasi), ringkasan `mobil: N · motor: M`, seed tampil tapi tak bisa dihapus. PNG seed tetap file di `dashboard/public/dataset/` — commit manual dari laptop (pelajaran #71: konektor text-only). Terverifikasi #72: `npx tsc -b --force` 0 error + `npm run build` sukses + `node --check` + uji live curl 9 kasus (seed 2 → POST 201 → duplikat 409 → label salah 400 → GET image 200 byte-identik → DELETE seed 403 → DELETE 200 → GET hapus 404 → id non-angka 400 → dataUrl bukan gambar 400) | permintaan Rama 16 Okt 2026 10:17–10:18 WIB; assignment #72 |
-| **#74 (16 Okt 2026):** 4 keluhan Rama. (1) **DVR bar ala video player**: thumb 14px terlihat + membesar saat hover/scrub, hit-area ±34px, rentang buffer terang ala YouTube, angka `posisi / panjang-jendela` (mm:ss) dalam chip 12px JELAS (denominator lifetime-tab #71 diganti — membingungkan), mode disabled jujur saat info jendela belum ada; feedback scrub 60fps (thumb+angka ikut drag). **Bug "mental balik" DITEMUKAN & diperbaiki**: guard DVR (margin 2 dtk selama grace) + clamp seek `lo=windowStart+1` → seek ke tepi kiri SELALU ditarik ke edge−45 — TERBUKTI via uji logika; perbaikan: guard tidak menyentuh posisi manual selama 30 dtk, `lo=windowStart+2`. (2) **Panel dataset**: grid thumbnail DIHAPUS — ringkasan kompak (jumlah/label + waktu tambah terakhir), upload/paste/drag-drop → toast singkat auto-hilang, daftar jadi collapsible default-tertutup (baris kompak tanpa thumbnail); seed tetap tak bisa dihapus. (3) **Box ngelock**: DUA akar — (a) **mismatch ruang koordinat** (utama): sejak #68 capture 960×540, bbox keluar dalam piksel bitmap tetapi overlay menggambar skala `canvas/videoWidth` (1920) → box setengah ukuran & geser kiri-atas; diperbaiki: `workerDetector` menskala output ke ruang video. (b) **ByteTrack PROPER** menggantikan CentroidTracker: Kalman filter 8-state + asosiasi IoU dua tahap (Hungarian) + birth/death + re-identifikasi via deteksi low-conf (parser dikunci 0,15, slider UI = ambang tahap-1); adaptasi fps-rendah: fallback jarak-pusat bila IoU=0. Uji Node 13/13 lolos (prediksi 1,6px, tanpa ID-switch saat bersilangan, re-id oklusi 6 frame). (4) **Modul training v1**: `GET /api/dataset/export` → ZIP YOLO (images/labels + dataset.yaml, writer pure-Node `backend/lib/zip.js`, pseudo-box full-frame — batas bootstrap DIDOKUMENTASIKAN jujur); `tools/train_yolo.py` (ultralytics CLI, `--help`/`--dry-run` tanpa torch); model custom via `VITE_DETECTOR_MODEL` (default tetap bawaan); `docs/training.md` end-to-end. (5) **DX**: `package.json` root — ritual baru `git pull → npm run setup → npm start` (aman di bash Windows). | laporan Rama 16 Okt 2026; assignment #74 |
-| **#75 (bugfix 16 Okt 2026):** 5 butir laporan Rama 13:49 WIB (build #74 fresh). **(1+2+3) DVR — SATU AKAR (regresi #71):** 'edge' bar dibaca dari `hls.liveSyncPosition` = posisi TARGET playback hls.js (clamp(liveEdge−45, jendela)), BUKAN live edge — sejak `liveSyncDuration` 5→45 (#71), pada playlist berjendela pendek hasil clamp = windowStart → syarat `edge > windowStart` gagal selamanya → "menunggu info DVR…" abadi + slider mati + angka hilang (bukti: source hls.js 1.7.3 `LatencyController.get liveSyncPosition`). Perbaikan: jendela DVR dari event `LEVEL_UPDATED` (faktual); `playback` dapat `windowEnd` + `dvrState` (loading/ready/unavailable); bar/slider/angka memakai `[windowStart, windowEnd]`; chip waktu + guard DVR tetap pakai liveSyncPosition; fallback JUJUR >20 dtk → "info jendela DVR tidak tersedia dari stream ini". **(4) BOX TIDAK NGUNCI — DUA PUTUS:** (a) race `inflight` di `workerDetector` (dipasang setelah `await createImageBitmap` → dua tick interleave → hasil inferensi asli HILANG + `inflight` macet 30 dtk → box BEKU); fix: `inflight=true` sinkron sebelum await. (b) gate asosiasi TETAP 200px vs jeda deteksi mengikuti kecepatan inferensi → ID-switch kronis → track lahir berv=0 → box DIAM lalu melompat (TERBUKTI uji Node: 12 frame @1fps, 250px/dtk → 12 ID, vx=0.0; pola sama pernah menggigit di #67); fix: gate ADAPTIF-WAKTU `max(200, 400×dt)` per track → skenario A kini 1 ID + velocity konvergen; regresi #74 13/13 lolos. **(5)** `scripts/zip-project.mjs` (pure Node, reuse `backend/lib/zip.js`): `node scripts/zip-project.mjs` → `<parent>/gods_eye.zip`; exclude `node_modules/**`, `.git/**`, `backend/data/**`, `*.zip` root; aman run-ulang. Terverifikasi: `npx tsc -b --force` 0 error + `npm run build` sukses + `node --check` + smoke zip (86 berkas, 193,3 MB, exclude dipatuhi). | laporan Rama 16 Okt 2026 13:49 WIB; assignment #75 |
+| `/cctv/*` | Proxy HLS dengan keep-alive, timeout, rewrite playlist ke same-origin, cache segmen berbatas 64 MB |
+| `/api/health` | Status backend dan statistik proxy |
 
-| URL stream hanya di `config/cameras.ts`; `getStreamUrl()` selalu path relatif `/cctv/…` (logika DEV/PROD dihapus #59) | arsitektur.md §3 + Addendum #59 |
-| Status LIVE/DELAY/BUFFERING/RECONNECTING/OFFLINE + backoff 1→2→5→15→30 | arsitektur.md §4 |
-| Stall > 10 dtk + multi-bitrate → turunkan kualitas dulu | arsitektur.md §4 butir 4 |
-| Metrik sesi: bitrate, resolusi, fps estimasi, stall, reconnect, uptime | arsitektur.md §4 butir 5 |
-| Visual: token warna, badge, overlay, OSD (strip delay kuning DIHAPUS #71) | mockup-dashboard.html (varian 1, pilihan Rama) |
-| Panel **"Log koneksi" di BAWAH video** (full-width, bukan samping), isi event nyata hls.js + timestamp WIB + ringkasan delay dari live edge (#71) | instruksi eksplisit Rama 15 Okt 2026 |
-| Styling plain CSS (bukan utility framework) | mockup tidak memakai utility framework — visual 1:1 lebih terjaga |
-| Sinyal buffering = event `waiting` milik `<video>` | hls.js v1.6 tidak mengekspos `BUFFER_STALLED`; perilaku §4 tetap terpenuhi |
-| `base: './'` | arsitektur.md §3 |
+Playlist tidak disimpan di cache. Segmen yang sama memakai satu fetch bersama;
+cache hanya membantu request ulang atau beberapa viewer. Satu viewer yang
+mengunduh segmen baru tidak otomatis menjadi lebih cepat karena cache.
 
-## Status verifikasi (jujur, 15 Okt 2026; #71: 16 Okt 2026)
+Fitur dataset (card, upload, paste, daftar, hapus, export, SQLite runtime,
+serta skrip trainer terkait) sudah dihapus. Endpoint lamanya mengembalikan 404.
+Database lama tetap tersimpan sebagai arsip dan tidak dibuka oleh backend.
 
-- `npm run build` (`tsc -b` + `vite build`): **BERSIH, tanpa error** (hanya warning
-  chunk > 500 kB yang sudah dinyatakan harmless di QA #54). Berlaku juga
-  setelah #68 (Gunet, 15 Okt 2026 ~21:00 WIB) dan **#71 (Gunet, 16 Okt 2026:
-  `npx tsc -b --force` 0 error + `npm run build` sukses** — stream runtime
-  TIDAK bisa diuji di VM: upstream CCTV memblokir IP data center; checklist
-  uji laptop ada di bawah).
-- **Backend teruji lokal di VM:** `npm start` jalan tanpa error; `GET /` → `200`,
-  `GET /api/health` → `{"ok":true,…}`, path acak → `200` (SPA fallback),
-  `GET /cctv/…` → diteruskan ke proksi (hasil `500` dari VM = upstream memblokir
-  IP data center — **routing terbukti benar**, bukan 404).
-- **Stream `.m3u8` TIDAK terjangkau dari VM ini** (pola sama dengan temuan riset
-  CCTV Jakarta: server memblokir IP data center). **"Video tampil" WAJIB
-  diverifikasi Rama di laptop (jaringan rumah)** — checklist `docs/runbook.md` §7.
-- QA Testarossa #54: **LULUS DENGAN CATATAN** — laporan: `docs/qa-report-v0.1.md`.
-  Audit keamanan Cipher #53: lulus tanpa temuan kritis.
-- Runbook operasional (Epthal #55, direvisi Gunet #59): **`docs/runbook.md`**.
+Environment backend: `PORT` (3000), `HOST` (127.0.0.1), `CCTV_UPSTREAM`
+(https://eofficev2.bekasikota.go.id).
 
-## Berikutnya (sesuai urutan Meeting #4 + perintah #60)
+## Development dan verifikasi
 
-> **WORKFLOW BARU (perintah Rama 15 Okt 2026):** build → lapor ke Rama dulu →
-> push → lapor lagi. **#60 BELUM di-push** — menunggu review Rama.
+Terminal pertama: `npm start`. Terminal kedua:
 
-1. **Rama (laptop, jaringan rumah):** `scripts\unduh-model.bat` (sekali) →
-   `git pull` → `npm install` (dashboard + backend) → `npm run build` →
-   `npm start` di `backend/` → buka http://localhost:3000. Checklist:
-   - badge DELAY ±45 dtk (BUKAN buffering) + ringkasan delay di panel
-     "Log koneksi",
-   - card "Deteksi kendaraan" di KANAN video berisi indikator
-     `Deteksi: N fps · Mms · webgl|wasm` + slider confidence + tombol toggle
-     (card video bersih: hanya video + DVR bar + kontrol play),
-   - DVR bar hampir selebar video (bisa di-scrub); angka di bawah bar
-     "posisi / lifetime tab" (mis. "00:46 / 12:03"),
-   - box kendaraan muncul: BIRU = ke atas, HIJAU = ke bawah,
-   - TIDAK ADA tooltip saat hover DVR bar; TIDAK ADA strip kuning di bawah
-     video,
-   - uji cabut WiFi → BUFFERING → RECONNECTING → kembali DELAY ±45 dtk.
-2. **#68 — verifikasi 10+ menit (WAJIB sebelum push, di laptop Rama):**
-   putar stream 10+ menit, lalu klik badge → "Unduh log playback (JSON)".
-   Kriteria lolos: (a) TIDAK ADA siklus buffering berulang (stall sesekali
-   karena jaringan = wajar; pola "buffer tiap X menit" = regresi, laporkan);
-   (b) kolom `gap` (bufEnd − pos) TUMBUH/STABIL — bukan menyusut ke nol
-   (bukti player tidak mengejar live edge). Kirim file JSON ke Muse bila
-   ragu — bisa dibaca langsung.
-3. **#68 — verifikasi deteksi (di laptop Rama):** indikator di card kanan
-   menampilkan `Deteksi: N fps · Mms · webgl|wasm` — catat ketiganya (N = fps riil,
-   M = ms/putaran, provider = bukti GPU dipakai). Box harus menempel mulus
-   di kendaraan (tidak tertinggal jauh); box prediksi tampil sedikit redup.
-   Baca `docs/akurasi-realistis.md` untuk ekspektasi yang sehat.
-4. **Rama (opsional tapi disarankan):** jalankan paket benchmark model i5
-   (Magna, #48) → angka fps/latensi final YOLO26n di CPU i5 miliknya.
-5. Setelah review Rama: push → lapor → (fase berikut) counting in/out + DB.
+```powershell
+npm --prefix dashboard run dev
+```
+
+Vite meneruskan `/cctv` dan `/api` ke backend port 3000, sehingga development
+memakai kebijakan proxy yang sama dengan produksi.
+
+```powershell
+npm test
+npm run build
+```
+
+Tes regresi memakai Node test runner dan TypeScript yang sudah terpasang di
+dashboard, tanpa framework tes tambahan. Cakupan: locking worker, korelasi
+respons, timestamp, seek, tracker, optical flow dengan ukuran error posisi,
+buffer, lifecycle player, proxy dan penghapusan API dataset.
+
+Analisis perombakan dan hasil uji: [docs/optimisasi-2026-10-24.md](docs/optimisasi-2026-10-24.md).
+Dokumen historis bertanggal 15–16 Oktober menjelaskan versi sebelum perombakan;
+gunakan README ini dan analisis 24 Oktober sebagai acuan perilaku saat ini.
+
+Tracking piksel dan hasil verifikasi terbaru: [docs/tracking-piksel.md](docs/tracking-piksel.md).
+
+Deteksi sejak observasi pertama dan hitungan sesi: [docs/deteksi-awal-frame.md](docs/deteksi-awal-frame.md).
+
+Prioritas area masuk dan filter ruas tujuan: [docs/prioritas-area-masuk.md](docs/prioritas-area-masuk.md).
+
+Diagnosis regresi motor dan koreksi cakupan crop: [docs/diagnosis-motor.md](docs/diagnosis-motor.md).
+
+Catatan versi sebelumnya: [docs/tracking-atas.md](docs/tracking-atas.md).
+Filter arah pada dokumen tersebut kini hanya menjadi bukti hitungan; deteksi
+tetap menampilkan semua arah.

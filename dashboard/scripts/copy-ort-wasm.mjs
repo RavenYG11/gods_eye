@@ -5,7 +5,8 @@
 // ort.env.wasm.wasmPaths — file-nya harus tersedia sebagai aset statis.
 // Dijalankan otomatis via "prebuild" di package.json.
 
-import { copyFileSync, mkdirSync, readdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, existsSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +28,9 @@ if (files.length === 0) {
   process.exit(1);
 }
 for (const f of files) {
+  const source = join(srcDir, f), destination = join(dstDir, f);
+  const hash = (filename) => createHash("sha256").update(readFileSync(filename)).digest("hex");
+  if (existsSync(destination) && statSync(source).size === statSync(destination).size && hash(source) === hash(destination)) continue;
   copyFileSync(join(srcDir, f), join(dstDir, f));
   console.log("[copy-ort-wasm]", f);
 }
