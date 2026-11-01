@@ -25,6 +25,25 @@ Sesudah mengubah kode frontend, jalankan `npm run build` dan muat ulang browser.
 Sesudah mengubah backend, restart `npm start`. Data pengguna tetap berada di
 `backend/data/dataset.db`; setup/build tidak menghapusnya.
 
+### Menghentikan service
+
+Tekan **Ctrl+C** di terminal yang menjalankan `npm start`. Jika terminalnya
+sudah hilang dan muncul `EADDRINUSE`, buka PowerShell dan cari PID listener:
+
+```powershell
+Get-NetTCPConnection -LocalPort 3000 -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess
+```
+
+Ganti `12345` dengan PID hasilnya, periksa command line untuk memastikan itu
+backend proyek ini, lalu hentikan PID tersebut:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "ProcessId = 12345" | Select-Object ProcessId,CommandLine
+Stop-Process -Id 12345
+```
+
+Jangan hentikan seluruh proses `node`, karena aplikasi lain bisa ikut berhenti.
+
 ## Playback
 
 Saat awal, player mengisi buffer video dan menunggu warmup deteksi selesai.
@@ -71,8 +90,29 @@ delay sebenarnya, stall, dan dropped frames untuk pemeriksaan sesi.
   delapan langkah/anggaran 4 ms sebelum memberi giliran pada frame gerak.
 - Acuan memakai kotak observasi asli, bukan posisi Kalman yang tertinggal.
   Track yang hanya diprediksi tidak dipakai sebagai pengukuran baru.
-- Ambang kelahiran track tetap: mobil 0,35, motor 0,25. Observasi lemah
-  >=0,12 dapat menyambung track terkonfirmasi. Tidak ada slider confidence.
+- Ambang kelahiran langsung: mobil 0,35, motor 0,25. Observasi lemah
+  >=0,12 mobil / >=0,10 motor dapat menyambung track terkonfirmasi. Tidak ada slider confidence.
+  Khusus pita 2% di batas bawah/kanan asli ruas tujuan dan area pendekatan kanan
+  bawah (kanan bbox >=78% lebar, bawah bbox >=68% tinggi), kelahiran diperbolehkan
+  pada score mobil 0,24 dan motor 0,18 untuk kendaraan terpotong. Skor model tidak
+  dinaikkan. Pertambahan badan kendaraan pada tepi dapat mempertahankan ID bila
+  pengukuran baru masih mencakup minimal separuh kotak lama.
+  Kandidat kelas motor >=0,10 yang belum punya track memerlukan dua observasi
+  konsisten bergerak ke atas pada ruas tujuan; satu skor lemah tidak langsung
+  menjadi kendaraan. Kandidat diam, ke bawah, berubah ukuran ekstrem atau
+  kedaluwarsa ditolak. Skor yang rendah tetap skor asli dari model.
+- Validasi menyimpan prediksi orang/sepeda sebagai bukti pembanding internal.
+  Kandidat kendaraan yang hampir seluruh badan sampai area roda dijelaskan oleh
+  prediksi orang/sepeda yang lebih kuat ditolak. Orang yang hanya menutupi bagian
+  atas box motor tetap boleh menjadi pengendara. Box mobil utuh yang sangat tinggi
+  dan sempit (rasio lebar/tinggi <0,55) ditolak; potongan batas frame dikecualikan.
+  Ini menyaring sebagian salah klasifikasi orang/gerobak, bukan pengenal gerobak
+  khusus. Bukti penolakan diselaraskan pada waktu capture untuk menghentikan
+  track piksel yang salah, tanpa menimpa observasi valid yang lebih baru.
+- Box ganda disaring sebelum asosiasi, lalu diperiksa kembali sebelum tampilan
+  dan hitungan. Box bersarang perlu pusat dan ukuran yang sebanding; kendaraan
+  berdampingan atau motor yang menutupi sebagian mobil tetap terpisah. Potongan
+  mobil yang melebar saat masuk mempertahankan identitas visualnya.
 - Kehilangan bukti piksel menghentikan pelacakan; kotak kedaluwarsa setelah
   220-400 ms tanpa bukti piksel. Track naik yang konsisten dapat melewati
   model miss sampai empat detik selama titik gambarnya masih terlacak.
@@ -159,6 +199,8 @@ Prioritas area masuk dan filter ruas tujuan: [docs/prioritas-area-masuk.md](docs
 
 Diagnosis regresi motor dan koreksi cakupan crop: [docs/diagnosis-motor.md](docs/diagnosis-motor.md).
 
+Riset dan perubahan deteksi pertama: [docs/riset-deteksi-awal.md](docs/riset-deteksi-awal.md).
+
 Catatan versi sebelumnya: [docs/tracking-atas.md](docs/tracking-atas.md).
-Filter arah pada dokumen tersebut kini hanya menjadi bukti hitungan; deteksi
-tetap menampilkan semua arah.
+Dokumen tersebut bersifat historis. Perilaku sekarang fokus pada ruas menuju
+Bekasi; seberang median dan gerak turun yang terkonfirmasi disembunyikan.

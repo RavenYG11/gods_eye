@@ -36,6 +36,8 @@ export interface DetectionFrame {
   framePts: number; // ← frame_pts (presentation timestamp stream)
   wallTime: number; // ← wall_time
   detections: Detection[];
+  /** Rejected vehicle hypotheses at capture time; used to retire false pixel tracks. */
+  rejectedDetections?: Detection[];
   /**
    * #68: DIAGNOSTIK INTERNAL (bukan skema Broto — tidak diserialisasi ke JSON).
    * Milidetik yang dihabiskan worker untuk SATU putaran detect (termasuk

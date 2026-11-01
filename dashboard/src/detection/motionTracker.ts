@@ -2,6 +2,8 @@ import { advanceBox, pyramid, selectFeatures, type Box, type GrayImage, type Poi
 import type { TrackedDetection } from "./tracker";
 import { canAnchor, motionCoast, observationCoast, MotionHeading } from "./motionPolicy";
 import { onTargetRoad } from "./targetRoad";
+import { duplicateVehicle, revealsEntry, uniqueVehicles } from "./vehicleGeometry";
+import type { Detection } from "./types";
 
 interface Frame { pts: number; image: Pyramid }
 interface VisualTrack {
@@ -86,15 +88,15 @@ export class MotionTracker {
 
   /** Replay late model anchors through real intervening frames. Never use a
    * Kalman-predicted/missed detection as a fresh visual measurement. */
-  anchor(detections: TrackedDetection[], pts: number): MotionSnapshot {
-    const work = this.anchorSteps(detections, pts);
+  anchor(detections: TrackedDetection[], pts: number, rejected: Detection[] = []): MotionSnapshot {
+    const work = this.anchorSteps(detections, pts, rejected);
     let next = work.next();
     while (!next.done) next = work.next();
     return next.value;
   }
 
   /** Yield after each replay frame so live motion frames can preempt anchors. */
-  *anchorSteps(detections: TrackedDetection[], pts: number): Generator<void, MotionSnapshot> {
+  *anchorSteps(detections: TrackedDetection[], pts: number, rejected: Detection[] = []): Generator<void, MotionSnapshot> {
     let index = -1, distance = Infinity;
     for (let i = 0; i < this.history.length; i++) {
       const delta = Math.abs(this.history[i].pts - pts);
@@ -102,9 +104,16 @@ export class MotionTracker {
     }
     if (index < 0 || distance > 0.045) return this.snapshot();
     const first = this.history[index];
+    // Compare negative evidence at capture time, not against today's moving
+    // box. A late rejection cannot override a newer accepted observation.
+    this.tracks = this.tracks.filter(track => {
+      if (track.det.lastSeenPts > pts) return true;
+      const box = this.boxAt(track, first.pts);
+      return !box || !rejected.some(d => duplicateVehicle(d, { label: track.det.label, bbox: box }));
+    });
     let now = this.history[this.history.length - 1]!;
     const claimed = new Set<VisualTrack>();
-    for (const det of detections) {
+    for (const det of uniqueVehicles(detections.filter(canAnchor).sort((a, b) => b.confidence - a.confidence))) {
       if (!canAnchor(det)) continue;
       if (this.options.targetRoadOnly && !onTargetRoad(det.bbox, this.width, this.height)) continue;
       // Most vehicles are already locked to pixels. Verify the model box
@@ -114,14 +123,16 @@ export class MotionTracker {
       let matched: VisualTrack | undefined, matchScore = 0;
       let measured: Box | undefined;
       for (const track of this.tracks) {
-        if (claimed.has(track) || track.det.label !== det.label || now.pts - track.lastGoodPts > motionCoast(this.interval)) continue;
-        const sample = track.path.find((p) => Math.abs(p.pts - first.pts) < 0.001);
-        if (!sample) continue;
-        const iou = overlap(sample.box, det.bbox);
+        if (claimed.has(track) || track.det.label !== det.label || !this.hasEvidence(track, now.pts)) continue;
+        const box = this.boxAt(track, first.pts);
+        if (!box) continue;
+        const iou = overlap(box, det.bbox);
         const sameId = track.detectorId === det.trackId;
         const score = iou + (sameId ? 0.3 : 0);
-        if (iou > (sameId ? 0.25 : 0.55) && score > matchScore) {
-          matched = track; measured = sample.box; matchScore = score;
+        const revealing = (track.edgeClipped || touchesFrame(det.bbox, this.width, this.height)) &&
+          sameId && revealsEntry(box, det.bbox);
+        if ((iou > (sameId ? 0.25 : 0.55) || revealing) && score > matchScore) {
+          matched = track; measured = box; matchScore = score;
         }
       }
       if (matched && measured) {
@@ -233,6 +244,17 @@ export class MotionTracker {
     return [track.box[0] + track.det.vx * dt, track.box[1] + track.det.vy * dt, track.box[2], track.box[3]];
   }
 
+  private boxAt(track: VisualTrack, pts: number): Box | undefined {
+    const sample = track.path.find(p => Math.abs(p.pts - pts) < 0.001);
+    if (sample) return sample.box;
+    // Textureless clipped births have no optical-flow path yet. Their short
+    // model grace still permits the next observation to reveal the full body.
+    if (track.modelOnly && pts >= track.pts && pts - track.det.lastSeenPts <= observationCoast(track.det.sampleIntervalSec)) {
+      return this.project(track, pts);
+    }
+    return undefined;
+  }
+
   private remember(track: VisualTrack, pts: number): boolean {
     const [x, y, w, h] = track.box;
     const modelAge = track.heading.direction === "atas" && track.det.observations >= 3 ? 4 : 2.2;
@@ -249,7 +271,21 @@ export class MotionTracker {
 
   snapshot(): MotionSnapshot {
     const pts = this.history[this.history.length - 1]?.pts ?? -1;
-    const visible = this.tracks.filter((t) => this.remember(t, pts) && this.hasEvidence(t, pts));
+    const candidates = this.tracks.filter((t) => this.remember(t, pts) && this.hasEvidence(t, pts))
+      .sort((a, b) => b.det.lastSeenPts - a.det.lastSeenPts || Number(b.counted) - Number(a.counted) ||
+        b.det.observations - a.det.observations || b.det.confidence - a.det.confidence);
+    const visible: VisualTrack[] = [];
+    for (const track of candidates) {
+      const same = visible.find(other => duplicateVehicle({ label: other.det.label, bbox: other.box },
+        { label: track.det.label, bbox: track.box }));
+      if (same) {
+        // Preserve counting evidence when a fresher observation replaces an
+        // older identity. Duplicate tracks must disappear before counting.
+        same.counted ||= track.counted;
+        this.tracks = this.tracks.filter(t => t !== track);
+      } else visible.push(track);
+    }
+    visible.sort((a, b) => a.det.trackId - b.det.trackId);
     for (const track of visible) {
       // Count each visual identity once, using real accumulated pixel motion.
       // Detector jitter, a model direction flag, parked vehicles and downward

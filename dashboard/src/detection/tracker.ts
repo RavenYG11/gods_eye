@@ -1,7 +1,10 @@
 // ByteTrack associates YOLO observations. Pixel tracking and latency replay
 // live in motionTracker.ts; observed anchors must retain the raw model box.
 import type { Detection, VehicleDirection } from "./types";
-import { DETECTOR_PARSE_FLOOR, VEHICLE_POLICY } from "./vehicleConfig";
+import { DETECTOR_PARSE_FLOOR, observationFloor } from "./vehicleConfig";
+import { validatedVehicles, vehicleBirthThreshold, type FrameSize } from "./vehicleAcceptance";
+import { duplicateVehicle, uniqueVehicles } from "./vehicleGeometry";
+import { MotorProposals } from "./motorProposals";
 import { coastDuration, INITIAL_SAMPLE_INTERVAL_SEC, updateSampleInterval } from "./trackingTiming";
 
 export interface TrackerOptions {
@@ -97,6 +100,8 @@ export interface TrackedDetection extends Detection {
   lastSeenPts: number;
   observations: number;
   reliable: boolean;
+  /** Gate that validated the original model observation, including entry policy. */
+  birthThreshold?: number;
   sampleIntervalSec: number;
   /** Main thread measures actual video-time lag at result delivery. */
   captureLagSec?: number;
@@ -366,10 +371,13 @@ function pairCost(
    * updateGroup: dibuka sebanding dt sejak track terakhir terlihat).
    */
   distGatePx: number,
+  allowEntryGrowth = false,
 ): number {
   const areaRatio = (detBox[2] * detBox[3]) / (trackBox[2] * trackBox[3]);
-  if (!Number.isFinite(areaRatio) || areaRatio < 0.25 || areaRatio > 4) return FORBIDDEN_COST;
   const iou = iouXYWH(trackBox, detBox);
+  const oldBoxCovered = iou * (1 + areaRatio) / (1 + iou);
+  const revealingBody = allowEntryGrowth && areaRatio <= 12 && oldBoxCovered >= 0.5;
+  if (!Number.isFinite(areaRatio) || areaRatio < 0.25 || (areaRatio > 4 && !revealingBody)) return FORBIDDEN_COST;
   if (iou >= iouGate) return 1 - iou;
   const d = centerDist(trackBox, detBox);
   if (d <= distGatePx) return 1 - iouGate + (d / distGatePx) * 0.2;
@@ -387,6 +395,7 @@ function associate(
   detBoxes: Array<[number, number, number, number]>,
   iouGate: number,
   distGatesPx: number[],
+  allowEntryGrowth: boolean[] = [],
 ): {
   matches: Array<[number, number]>;
   unmatchedTracks: number[];
@@ -406,7 +415,7 @@ function associate(
   const cost: number[][] = Array.from({ length: n }, (_, i) =>
     Array.from({ length: n }, (_, j) => {
       if (i < nT && j < nD)
-        return pairCost(trackBoxes[i], detBoxes[j], iouGate, distGatesPx[i]);
+        return pairCost(trackBoxes[i], detBoxes[j], iouGate, distGatesPx[i], allowEntryGrowth[i]);
       return FORBIDDEN_COST; // sel dummy — selalu kalah dari pasangan valid
     }),
   );
@@ -455,6 +464,8 @@ interface Track {
   lastSeenPts: number;
   predictedPts: number;
   lastBox: [number, number, number, number];
+  birthThreshold: number;
+  entryClipped: boolean;
 }
 
 export class ByteTracker {
@@ -463,13 +474,16 @@ export class ByteTracker {
   private highThresh: number | null = null;
   private previousPts = -1;
   private sampleIntervalSec = INITIAL_SAMPLE_INTERVAL_SEC;
+  private frameSize: FrameSize | null = null;
+  private motorProposals = new MotorProposals();
+  public rejectedDetections: Detection[] = [];
 
   constructor(private readonly opts: TrackerOptions = DEFAULT_TRACKER_OPTIONS) {
 
   }
 
-  private thresholdFor(label: string): number {
-    return this.highThresh ?? VEHICLE_POLICY[label as keyof typeof VEHICLE_POLICY]?.newTrackConfidence ?? this.opts.highConfThreshold;
+  private thresholdFor(label: string, box?: Detection["bbox"]): number {
+    return this.highThresh ?? vehicleBirthThreshold(label, box, this.frameSize) ?? this.opts.highConfThreshold;
   }
 
   /** Ambang tahap-1 — disinkron dari slider confidence UI (via worker). */
@@ -483,6 +497,9 @@ export class ByteTracker {
     this.nextId = 1;
     this.previousPts = -1;
     this.sampleIntervalSec = INITIAL_SAMPLE_INTERVAL_SEC;
+    this.frameSize = null;
+    this.motorProposals.reset();
+    this.rejectedDetections = [];
   }
 
   /**
@@ -491,23 +508,30 @@ export class ByteTracker {
    * @param framePts video.currentTime saat frame DITANGKAP — basis waktu
    *        velocity & prediksi overlay.
    */
-  update(detections: Detection[], framePts: number): TrackedDetection[] {
+  update(detections: Detection[], framePts: number, frameSize?: FrameSize): TrackedDetection[] {
     const o = this.opts;
     if (!Number.isFinite(framePts)) return [];
     if (this.previousPts >= 0 && (framePts < this.previousPts || framePts - this.previousPts > 3)) this.reset();
+    this.frameSize = frameSize ?? null;
+    const accepted = validatedVehicles(detections, this.frameSize);
+    this.rejectedDetections = detections.filter(d => (d.label === "mobil" || d.label === "motor") &&
+      !accepted.includes(d) && !accepted.some(other => duplicateVehicle(d, other)));
+    this.motorProposals.reject(this.rejectedDetections);
+    detections = accepted;
     if (this.previousPts >= 0) this.sampleIntervalSec = updateSampleInterval(this.sampleIntervalSec, framePts - this.previousPts);
     this.previousPts = framePts;
     this.tracks = this.tracks.filter((t) => framePts - t.lastSeenPts <= 3);
 
     // Asosiasi per label (mobil≠motor tidak boleh tertukar ID).
     const labels = new Set<string>();
+    labels.add("motor"); // expire pending proposals even when this view is empty
     for (const t of this.tracks) labels.add(t.label);
     for (const d of detections) labels.add(d.label);
 
     for (const label of labels) {
       const groupTracks = this.tracks.filter((t) => t.label === label);
       const groupDets = detections.filter((d) => d.label === label);
-      this.updateGroup(groupTracks, groupDets, framePts);
+      this.updateGroup(label, groupTracks, groupDets, framePts);
     }
 
     // Hapus yang hilang terlalu lama (di luar jangkauan re-identifikasi).
@@ -539,12 +563,17 @@ export class ByteTracker {
         lastSeenPts: t.lastSeenPts,
         observations: t.hits,
         reliable: t.hits >= 4 && t.highHits >= 2,
+        birthThreshold: t.birthThreshold,
         sampleIntervalSec: this.sampleIntervalSec,
       });
     }
     // Urutan stabil untuk overlay: ID menaik.
-    result.sort((a, b) => a.trackId - b.trackId);
-    return result;
+    const unique = uniqueVehicles(result.sort((a, b) => Number(a.stale) - Number(b.stale) ||
+      b.lastSeenPts - a.lastSeenPts || b.observations - a.observations || b.confidence - a.confidence));
+    const kept = new Set(unique.map(t => t.trackId));
+    const removed = new Set(result.filter(t => !kept.has(t.trackId)).map(t => t.trackId));
+    this.tracks = this.tracks.filter(t => !removed.has(t.id));
+    return unique.sort((a, b) => a.trackId - b.trackId);
   }
 
   /**
@@ -560,6 +589,7 @@ export class ByteTracker {
    * tahap-1 (oklus parsial → skor turun).
    */
   private updateGroup(
+    label: string,
     groupTracks: Track[],
     groupDets: Detection[],
     framePts: number,
@@ -577,8 +607,8 @@ export class ByteTracker {
     const low: Detection[] = [];
     for (const d of groupDets) {
       // Di bawah lantai = noise model, bukan kandidat (kontrak detector).
-      if (d.confidence < Math.min(o.lowConfFloor, this.thresholdFor(d.label))) continue;
-      (d.confidence >= this.thresholdFor(d.label) ? high : low).push(d);
+      if (d.confidence < Math.min(o.lowConfFloor, observationFloor(d.label), this.thresholdFor(d.label, d.bbox))) continue;
+      (d.confidence >= this.thresholdFor(d.label, d.bbox) ? high : low).push(d);
     }
 
     const refreshed = new Set<Track>();
@@ -618,6 +648,7 @@ export class ByteTracker {
       high.map((d) => d.bbox),
       o.iouGateHigh,
       groupTracks.map((t) => gateFor(t, o.distGateHighPx)),
+      groupTracks.map((t) => t.entryClipped),
     );
     const s1MatchedTrackIdx = new Set<number>();
     const s1MatchedDetIdx = new Set<number>();
@@ -640,6 +671,7 @@ export class ByteTracker {
       low.map((d) => d.bbox),
       o.iouGateLow,
       s1UnmatchedActive.map((t) => gateFor(t, o.distGateLowPx)),
+      s1UnmatchedActive.map((t) => t.entryClipped),
     );
     for (const [ti, di] of s2.matches) {
       const tr = s1UnmatchedActive[ti];
@@ -681,7 +713,26 @@ export class ByteTracker {
         lastSeenPts: framePts,
         predictedPts: framePts,
         lastBox: [...d.bbox],
+        birthThreshold: this.thresholdFor(d.label, d.bbox),
+        entryClipped: this.thresholdFor(d.label, d.bbox) < this.thresholdFor(d.label),
       });
+    }
+    if (label === "motor") {
+      const promoted = this.motorProposals.update(s2.unmatchedDets.map(i => low[i]), framePts, this.frameSize);
+      for (const candidate of promoted) {
+        const d = candidate.first, [x, y, w, h] = d.bbox, cx = x + w / 2, cy = y + h / 2;
+        const track: Track = {
+          id: this.nextId++, kf: new KalmanFilter(cx, cy, w, h), label: d.label, classId: d.classId,
+          state: "active", timeSinceUpdate: 0, hits: 1, highHits: 0, lastConfidence: d.confidence,
+          history: [{ cx, cy, pts: candidate.firstPts }], vx: 0, vy: 0,
+          prevCx: cx, prevCy: cy, prevPts: candidate.firstPts, lastSeenPts: candidate.firstPts,
+          predictedPts: candidate.firstPts, lastBox: [...d.bbox],
+          birthThreshold: this.thresholdFor(d.label, d.bbox), entryClipped: false,
+        };
+        track.kf.predict(framePts - candidate.firstPts); track.predictedPts = framePts;
+        this.refreshTrack(track, candidate.current, framePts);
+        this.tracks.push(track);
+      }
     }
   }
 
@@ -694,6 +745,7 @@ export class ByteTracker {
     const o = this.opts;
     const [x, y, w, h] = det.bbox;
     t.lastBox = [...det.bbox];
+    t.entryClipped = this.thresholdFor(det.label, det.bbox) < this.thresholdFor(det.label);
     t.kf.update([x + w / 2, y + h / 2, w, h]);
     const c = t.kf.center;
     // Velocity output dari posisi TERFILTER (jauh lebih halus daripada
@@ -714,7 +766,7 @@ export class ByteTracker {
     t.timeSinceUpdate = 0;
     t.state = "active";
     t.hits += 1;
-    if (det.confidence >= this.thresholdFor(det.label)) t.highHits++;
+    if (det.confidence >= this.thresholdFor(det.label, det.bbox)) t.highHits++;
     t.lastConfidence = det.confidence;
     t.lastSeenPts = framePts;
     t.history.push({ cx: c.cx, cy: c.cy, pts: framePts });

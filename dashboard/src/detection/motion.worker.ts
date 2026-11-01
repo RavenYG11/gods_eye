@@ -3,10 +3,11 @@ import { MotionTracker, type MotionSnapshot } from "./motionTracker";
 import type { TrackedDetection } from "./tracker";
 import { canAnchor } from "./motionPolicy";
 import { onTargetRoad } from "./targetRoad";
+import type { Detection } from "./types";
 
 export type MotionRequest =
   | { type: "frame"; generation: number; bitmap: ImageBitmap; pts: number; srcW: number; srcH: number }
-  | { type: "anchor"; generation: number; detections: TrackedDetection[]; pts: number; srcW: number; srcH: number }
+  | { type: "anchor"; generation: number; detections: TrackedDetection[]; rejectedDetections?: Detection[]; pts: number; srcW: number; srcH: number }
   | { type: "reset"; generation: number };
 export type MotionResponse = { type: "motion"; generation: number; ack: boolean; snapshot: MotionSnapshot }
   | { type: "error"; generation: number; message: string };
@@ -34,7 +35,8 @@ function applyNextAnchor(): void {
   try {
     replay ??= tracker.anchorSteps(job.detections.map((det) => ({ ...det,
       bbox: [det.bbox[0] * kx, det.bbox[1] * ky, det.bbox[2] * kx, det.bbox[3] * ky],
-      vx: det.vx * kx, vy: det.vy * ky })), job.pts);
+      vx: det.vx * kx, vy: det.vy * ky })), job.pts, job.rejectedDetections?.map(det => ({ ...det,
+        bbox: [det.bbox[0] * kx, det.bbox[1] * ky, det.bbox[2] * kx, det.bbox[3] * ky] })));
     // Amortize timer clamping across several historical frames, while keeping
     // a four-ms budget so incoming live frames can still preempt replay.
     const started = performance.now();

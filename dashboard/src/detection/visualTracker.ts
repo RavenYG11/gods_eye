@@ -41,6 +41,7 @@ export class VisualTracker {
     if (this.disposed) return;
     const msg: MotionRequest = { type: "anchor", generation: this.generation,
       detections: frame.detections as TrackedDetection[], pts: frame.framePts,
+      rejectedDetections: frame.rejectedDetections,
       srcW: video.videoWidth, srcH: video.videoHeight };
     this.worker.postMessage(msg);
   }

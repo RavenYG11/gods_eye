@@ -1,4 +1,4 @@
-import { DETECTOR_PARSE_FLOOR, VEHICLE_POLICY } from "./vehicleConfig";
+import { observationFloor, VEHICLE_POLICY } from "./vehicleConfig";
 import type { TrackedDetection } from "./tracker";
 
 export const motionCoast = (interval: number): number => Math.max(0.22, Math.min(0.4, interval * 3));
@@ -7,9 +7,11 @@ export const motionCoast = (interval: number): number => Math.max(0.22, Math.min
 export const observationCoast = (interval: number): number => Math.max(0.3, Math.min(0.8, interval * 1.5));
 export function canAnchor(det: TrackedDetection): boolean {
   const policy = VEHICLE_POLICY[det.label as keyof typeof VEHICLE_POLICY];
-  return !!policy && !det.stale && det.bbox.every(Number.isFinite) &&
+  if (!policy) return false;
+  const firstThreshold = det.birthThreshold === policy.entryConfidence ? policy.entryConfidence : policy.newTrackConfidence;
+  return !det.stale && det.bbox.every(Number.isFinite) &&
     det.bbox[2] > 2 && det.bbox[3] > 2 && Number.isFinite(det.confidence) &&
-    det.confidence >= (det.observations >= 2 ? DETECTOR_PARSE_FLOOR : policy.newTrackConfidence);
+    det.confidence >= (det.observations >= 2 ? observationFloor(det.label) : firstThreshold);
 }
 
 /** Direction uses accumulated displacement, not the sign of a noisy frame. */

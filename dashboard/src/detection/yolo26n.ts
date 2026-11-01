@@ -8,6 +8,8 @@ import {
   COCO_TO_VEHICLE,
   CONFIDENCE_THRESHOLD,
   MODEL_INPUT_SIZE,
+  MOTOR_PROPOSAL_FLOOR,
+  DETECTOR_PARSE_FLOOR,
 } from "./vehicleConfig";
 import type { Detection } from "./types";
 
@@ -41,8 +43,8 @@ export function unletterbox(
 /**
  * Parse output mentah YOLO26n [1, 300, 6] → Detection[] dalam piksel frame sumber.
  * Tiap baris = [x1, y1, x2, y2, skor, classId] dalam koordinat 640 letterbox.
- * NMS-free: skor & kelas sudah final — TIDAK ada NMS di sini (riset #48).
- * #62: hanya kelas motor & mobil (koreksi Rama) — classId lain dibuang.
+ * End-to-end scores need no decoding. Duplicate/competing boxes are validated
+ * downstream, before association. Auxiliary classes are opt-in evidence only.
  */
 export function parseYolo26nOutput(
   data: ArrayLike<number>,
@@ -53,6 +55,7 @@ export function parseYolo26nOutput(
     timestamp: number;
     confidenceThreshold?: number;
     classMap?: Record<number, "mobil" | "motor">;
+    contextClassMap?: Record<number, string>;
   },
 ): Detection[] {
   const threshold = opts.confidenceThreshold ?? CONFIDENCE_THRESHOLD;
@@ -63,11 +66,15 @@ export function parseYolo26nOutput(
   for (let i = 0; i < ROWS; i++) {
     const base = i * COLS;
     const score = data[base + 4];
-    if (!(score >= threshold)) continue; // NaN pun gugur di sini
-
     const classId = Math.round(data[base + 5]);
-    const label = (opts.classMap ?? COCO_TO_VEHICLE)[classId];
+    const vehicles: Partial<Record<number, string>> = opts.classMap ?? COCO_TO_VEHICLE;
+    const label = vehicles[classId] ?? opts.contextClassMap?.[classId];
     if (!label) continue; // bukan motor/mobil → buang (koreksi Rama #62)
+    // A lower motor parse floor only feeds the temporal proposal stage. It
+    // cannot bypass the birth gate or an explicitly raised parser threshold.
+    const floor = label === "person" || label === "bicycle" ? Math.max(0.35, threshold)
+      : label === "motor" && threshold <= DETECTOR_PARSE_FLOOR ? Math.min(threshold, MOTOR_PROPOSAL_FLOOR) : threshold;
+    if (!(score >= floor)) continue; // NaN pun gugur di sini
 
     const p1 = unletterbox(data[base], data[base + 1], opts.lb);
     const p2 = unletterbox(data[base + 2], data[base + 3], opts.lb);

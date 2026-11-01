@@ -19,7 +19,9 @@ export class OnnxVehicleDetector implements Detector {
   private threshold = CONFIDENCE_THRESHOLD;
   private sequence = 0;
   private classMap: Record<number, "mobil" | "motor"> = COCO_TO_VEHICLE;
+  private contextClassMap: Record<number, string> = { 0: "person", 1: "bicycle" };
   public provider = "wasm";
+  public benchmarks: { provider: string; ms?: number; error?: string }[] = [];
 
   setThreshold(value: number): void {
     if (Number.isFinite(value)) this.threshold = Math.min(0.9, Math.max(0.1, value));
@@ -27,6 +29,9 @@ export class OnnxVehicleDetector implements Detector {
 
   async initWithWasm(opts: { modelUrl: string; labels: string[] }, wasmBase: string): Promise<void> {
     await this.dispose();
+    this.classMap = COCO_TO_VEHICLE;
+    this.contextClassMap = { 0: "person", 1: "bicycle" };
+    this.benchmarks = [];
     // Explicit entry point registers WebGPU; the default ORT bundle does not.
     const ort = await import("onnxruntime-web/webgpu");
     this.ort = ort;
@@ -42,8 +47,10 @@ export class OnnxVehicleDetector implements Detector {
     }
     if (classes) {
       this.classMap = {};
+      this.contextClassMap = {};
       classes.forEach((label, id) => {
         if (label === "mobil" || label === "motor") this.classMap[id] = label;
+        else if (label === "person" || label === "bicycle") this.contextClassMap[id] = label;
       });
       if (!Object.keys(this.classMap).length) throw new Error("Daftar kelas model harus memuat mobil atau motor.");
     }
@@ -75,6 +82,7 @@ export class OnnxVehicleDetector implements Detector {
           elapsed += performance.now() - started;
           Object.values(measured).forEach((tensor) => tensor.dispose());
         }
+        this.benchmarks.push({ provider, ms: elapsed / 2 });
         if (elapsed < bestMs) {
           await this.session?.release();
           this.session = session;
@@ -83,6 +91,7 @@ export class OnnxVehicleDetector implements Detector {
         } else await session.release();
         if (bestMs / 2 < 50) break; // already comfortably above the capture target
       } catch (e) {
+        this.benchmarks.push({ provider, error: e instanceof Error ? e.message : String(e) });
         errors.push(`${provider}: ${e instanceof Error ? e.message : String(e)}`);
         await session?.release().catch(() => undefined);
       } finally {
@@ -93,6 +102,10 @@ export class OnnxVehicleDetector implements Detector {
       await this.dispose();
       throw new Error(`Gagal memuat model ${opts.modelUrl}. ${errors.join("; ")}`);
     }
+    this.prepareCanvas();
+  }
+
+  private prepareCanvas(): void {
     this.canvas = new OffscreenCanvas(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
     this.context = this.canvas.getContext("2d", { willReadFrequently: true });
     if (!this.context) throw new Error("OffscreenCanvas 2D tidak tersedia.");
@@ -118,7 +131,7 @@ export class OnnxVehicleDetector implements Detector {
       const tensor = outputs[session.outputNames[0]];
       return restoreRegion(parseYolo26nOutput(tensor.data as ArrayLike<number>, {
         srcW: region.width, srcH: region.height, lb, timestamp,
-        confidenceThreshold: this.threshold, classMap: this.classMap,
+        confidenceThreshold: this.threshold, classMap: this.classMap, contextClassMap: this.contextClassMap,
       }), region).filter((det) => onTargetRoad(det.bbox, srcW, srcH));
     } finally {
       Object.values(outputs).forEach((tensor) => tensor.dispose());

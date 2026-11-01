@@ -78,7 +78,7 @@ async function handleInit(
     await detector.initWithWasm({ modelUrl, labels }, wasmBase);
     ready = true;
     // #68: sertakan execution provider terpilih (webgl|wasm) untuk chip UI.
-    post({ type: "ready", modelUrl, provider: detector.provider });
+    post({ type: "ready", modelUrl, provider: detector.provider, benchmarks: detector.benchmarks });
   } catch (err) {
     const primaryMsg = err instanceof Error ? err.message : String(err);
     // Fallback: hanya bila URL fallback dikonfigurasi (saat ini "" — lihat
@@ -89,7 +89,7 @@ async function handleInit(
       try {
         await detector.initWithWasm({ modelUrl: fallbackUrl, labels }, wasmBase);
         ready = true;
-        post({ type: "ready", modelUrl: fallbackUrl, provider: detector.provider });
+        post({ type: "ready", modelUrl: fallbackUrl, provider: detector.provider, benchmarks: detector.benchmarks });
         return;
       } catch {
         // pesan galat utama yang dilaporkan
@@ -119,7 +119,7 @@ async function handleDetect(
     lastPts = framePts;
     lastSize = size;
     // #68: framePts diteruskan ke tracker = basis waktu velocity & prediksi.
-    const tracked = tracker.update(raw, framePts);
+    const tracked = tracker.update(raw, framePts, { width: srcW, height: srcH });
     post({
       type: "result",
       requestId: msg.requestId,
@@ -128,6 +128,7 @@ async function handleDetect(
         framePts,
         wallTime: timestamp,
         detections: tracked,
+        rejectedDetections: tracker.rejectedDetections,
         inferMs: Math.round(performance.now() - t0),
       },
     });

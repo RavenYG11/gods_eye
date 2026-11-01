@@ -93,6 +93,10 @@ export class WorkerVehicleDetector implements Detector {
         d.vx *= kx; d.vy *= ky;
         d.captureLagSec = captureLag;
       }
+      for (const d of frame.rejectedDetections ?? []) {
+        const [x, y, w, h] = d.bbox;
+        d.bbox = [x * kx, y * ky, w * kx, h * ky];
+      }
       this.lastInferMs = frame.inferMs;
       return frame;
     } catch (e) {

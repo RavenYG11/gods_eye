@@ -7,7 +7,7 @@ export type WorkerRequest =
   | { type: "reset" };
 
 export type WorkerResponse =
-  | { type: "ready"; modelUrl: string; provider: string }
+  | { type: "ready"; modelUrl: string; provider: string; benchmarks?: { provider: string; ms?: number; error?: string }[] }
   | { type: "init-error"; message: string }
   | { type: "result"; requestId: number; frame: DetectionFrame }
   | { type: "detect-error"; requestId: number; message: string }

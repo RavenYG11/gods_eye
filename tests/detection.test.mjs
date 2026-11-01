@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ByteTracker, predictBbox } from "../dashboard/src/detection/tracker.ts";
 import { parseYolo26nOutput, letterboxParams } from "../dashboard/src/detection/yolo26n.ts";
 import { WorkerVehicleDetector } from "../dashboard/src/detection/workerDetector.ts";
+import { canAnchor } from "../dashboard/src/detection/motionPolicy.ts";
 
 const det = (x, y = 100, score = 0.9, size = 30) => ({ classId: 2, label: "mobil",
   confidence: score, bbox: [x, y, size, size], timestamp: 0 });
@@ -74,6 +75,69 @@ test("fixed class thresholds accept motorcycles separately from cars", () => {
   assert.equal(tracker.update([motor], 0.1).length, 1);
 });
 
+test("partial bottom entries may start immediately while interior and opposite-road gates stay unchanged", () => {
+  const size = { width: 320, height: 200 };
+  const car = { ...det(260, 177, .26), bbox: [260, 177, 60, 23] };
+  const motor = { ...det(80, 180, .19), label: 'motor', classId: 3, bbox: [80, 180, 20, 20] };
+  const born = new ByteTracker().update([car, motor], 0, size);
+  assert.equal(born.length, 2);
+  assert.ok(born.every(d => d.observations === 1 && canAnchor(d)));
+  assert.equal(new ByteTracker().update([{ ...car, bbox: [150, 120, 60, 23] }], 0, size).length, 0);
+  assert.equal(new ByteTracker().update([{ ...car, bbox: [290, 30, 30, 23] }], 0, size).length, 0);
+  assert.equal(new ByteTracker().update([{ ...car, confidence: .15 }], 0, size).length, 0);
+});
+
+test("a clipped birth keeps its identity when more body appears with a weaker observation", () => {
+  const tracker = new ByteTracker(), size = { width: 320, height: 200 };
+  const first = { ...det(300, 175, .26), bbox: [300, 175, 20, 25] };
+  const [born] = tracker.update([first], 0, size);
+  const full = { ...first, confidence: .2, bbox: [272, 140, 48, 55] };
+  const [next] = tracker.update([full], .15, size);
+  assert.equal(next.trackId, born.trackId);
+  assert.equal(next.stale, false);
+  assert.deepEqual(next.bbox, full.bbox);
+});
+
+const weakMotor = (x, y, confidence = .115) => ({ ...det(x, y, confidence), label: "motor", classId: 3,
+  bbox: [x, y, 20, 40] });
+test("two consistent weak upward motorcycle observations can establish and sustain one ID", () => {
+  const tracker = new ByteTracker(), size = { width: 960, height: 540 };
+  assert.equal(tracker.update([weakMotor(400, 240)], 0, size).length, 0);
+  const [born] = tracker.update([weakMotor(395, 229, .105)], .35, size);
+  assert.equal(born.label, "motor"); assert.equal(born.observations, 2);
+  assert.equal(born.confidence, .105); assert.equal(canAnchor(born), true);
+  const [next] = tracker.update([weakMotor(390, 218)], .7, size);
+  assert.equal(next.trackId, born.trackId); assert.equal(next.stale, false);
+});
+
+test("weak motorcycle proposals reject static, downward, expired, opposite-road and person hypotheses", () => {
+  const size = { width: 960, height: 540 };
+  for (const [first, second, delay] of [
+    [weakMotor(400, 240), weakMotor(400, 240), .3],
+    [weakMotor(400, 240), weakMotor(405, 251), .3],
+    [weakMotor(400, 240), weakMotor(395, 229), 1.3],
+    [weakMotor(900, 80), weakMotor(895, 69), .3],
+    [{ ...weakMotor(400, 240), label: "person", classId: 0 }, { ...weakMotor(395, 229), label: "person", classId: 0 }, .3],
+    [weakMotor(400, 240), weakMotor(395, 229, .09), .3],
+    [weakMotor(400, 240), { ...weakMotor(395, 229), bbox: [395, 229, 60, 120] }, .3],
+  ]) {
+    const tracker = new ByteTracker();
+    tracker.update([first], 0, size);
+    assert.equal(tracker.update([second], delay, size).length, 0);
+  }
+  const tracker = new ByteTracker(); tracker.update([weakMotor(400, 240)], 0, size); tracker.reset();
+  assert.equal(tracker.update([weakMotor(395, 229)], .3, size).length, 0);
+});
+
+test("proposal parse floor retains weak motorcycles without lowering car or explicit thresholds", () => {
+  const data = new Float32Array(1800); data.set([100, 100, 120, 140, .11, 3]);
+  data.set([200, 100, 240, 140, .11, 2], 6);
+  const options = { srcW: 640, srcH: 640, lb: letterboxParams(640, 640), timestamp: 0 };
+  const parsed = parseYolo26nOutput(data, { ...options, confidenceThreshold: .12 });
+  assert.equal(parsed.length, 1); assert.equal(parsed[0].label, "motor");
+  assert.equal(parseYolo26nOutput(data, { ...options, confidenceThreshold: .4 }).length, 0);
+});
+
 test("observed anchors use the actual model box, without Kalman lag", () => {
   const tracker = new ByteTracker();
   tracker.update([det(100)], 0);
@@ -139,6 +203,18 @@ test("skipped calls never unlock an active capture or inference", async () => {
   const frame = await first;
   assert.deepEqual(frame.detections[0].bbox, [20, 200, 60, 60]);
   assert.equal(frame.detections[0].vx, 10);
+  await detector.dispose();
+});
+
+test("rejected capture-time boxes are scaled with accepted detections", async () => {
+  const detector = await init(), video = new FakeVideo();
+  const pending = detector.detectFrame(video);
+  releaseCapture(); await tick();
+  const worker = FakeWorker.current, response = result(worker.requests.find(m => m.type === "detect").requestId);
+  response.frame.rejectedDetections = [{ ...det(20), label: "motor", classId: 3 }];
+  worker.reply(response);
+  const frame = await pending;
+  assert.deepEqual(frame.rejectedDetections[0].bbox, [40, 200, 60, 60]);
   await detector.dispose();
 });
 test("capture PTS is frozen before bitmap extraction and unrelated responses are ignored", async () => {

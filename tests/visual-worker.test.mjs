@@ -19,6 +19,15 @@ const video = { videoWidth: 1920, videoHeight: 1080 };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const bitmap = () => ({ width: 640, height: 360, closed: false, close() { this.closed = true; } });
 
+test("visual worker receives negative evidence at the original capture timestamp", () => {
+  const tracker = new VisualTracker(() => {}, assert.fail), worker = FakeWorker.latest;
+  const rejected = [{ label: "motor", classId: 3, bbox: [90, 110, 40, 65], confidence: .3, timestamp: 0 }];
+  tracker.anchor({ framePts: 4, detections: [], rejectedDetections: rejected }, video);
+  assert.equal(worker.requests[0].pts, 4);
+  assert.deepEqual(worker.requests[0].rejectedDetections, rejected);
+  tracker.dispose();
+});
+
 test("visual capture has its own bounded lock and only a frame ack releases it", async () => {
   const snapshots = [], errors = [];
   const tracker = new VisualTracker((s) => snapshots.push(s), (e) => errors.push(e));

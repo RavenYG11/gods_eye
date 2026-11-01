@@ -37,6 +37,14 @@ test("motion worker delivers session entries with scaled boxes and clears them o
   assert.deepEqual(first.snapshot.entries, { mobil: 0, motor: 0 });
   for (let i = 1; i <= 20; i++) frame(i);
   assert.deepEqual(messages.at(-1).snapshot.entries, { mobil: 1, motor: 0 });
+  const beforeRejection = messages.length;
+  self.onmessage({ data: { type: "anchor", generation: 0, pts: 1, srcW: 640, srcH: 400,
+    detections: [], rejectedDetections: [{ classId: 2, label: "mobil", confidence: .4,
+      bbox: [140, 220, 128, 96], timestamp: 0 }] } });
+  for (let i = 0; i < 100 && messages.length === beforeRejection; i++)
+    await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(messages.at(-1).snapshot.detections.length, 0, "negative evidence uses scaled coordinates");
+  assert.deepEqual(messages.at(-1).snapshot.entries, { mobil: 1, motor: 0 });
   self.onmessage({ data: { type: "reset", generation: 1 } });
   frame(0, 1);
   assert.deepEqual(messages.at(-1).snapshot.entries, { mobil: 0, motor: 0 });

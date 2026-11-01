@@ -8,14 +8,18 @@ export const MOTION_FPS = 25;
 // Fixed acceptance thresholds, NOT invented accuracy percentages. Weak model
 // observations may sustain an already confirmed object through ByteTrack.
 export const VEHICLE_POLICY = {
-  mobil: { newTrackConfidence: 0.35 },
-  motor: { newTrackConfidence: 0.25 },
+  mobil: { newTrackConfidence: 0.35, entryConfidence: 0.24 },
+  motor: { newTrackConfidence: 0.25, entryConfidence: 0.18 },
 } as const;
 // Benchmark both GPU layouts: NHWC reduces convolution overhead on this camera's
 // target device; the default layout and WASM remain measured fallbacks.
 export const ORT_EXECUTION_PROVIDERS: readonly string[] = ["webgpu-nhwc", "webgpu", "wasm"];
 export const ORT_NUM_THREADS = 2; // leave CPU capacity for decoding and the UI
 export const DETECTOR_PARSE_FLOOR = 0.12;
+// Weak motor proposals require a second spatially consistent upward observation
+// before birth. Cars and immediate single-observation births keep their gates.
+export const MOTOR_PROPOSAL_FLOOR = 0.10;
+export const observationFloor = (label: string): number => label === "motor" ? MOTOR_PROPOSAL_FLOOR : DETECTOR_PARSE_FLOOR;
 export const COCO_TO_VEHICLE: Record<number, "mobil" | "motor"> = { 2: "mobil", 3: "motor" };
 export const DIRECTION_COLORS = {
   atas: "#38bdf8", bawah: "#22c55e", unknown: "#94a3b8",

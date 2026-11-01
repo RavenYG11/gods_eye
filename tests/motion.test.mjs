@@ -25,6 +25,44 @@ const anchor = (box, pts = 0, id = 1, label = "mobil") => ({ classId: label === 
 const error = (a, b) => Math.hypot(a[0] + a[2] / 2 - b[0] - b[2] / 2,
   a[1] + a[3] / 2 - b[1] - b[3] / 2);
 
+test("duplicate car and motorcycle anchors never produce two boxes or two entries", () => {
+  for (const label of ["mobil", "motor"]) {
+    const tracker = new MotionTracker();
+    for (let i = 0; i <= 18; i++) {
+      const pts = i * .05, box = [90 - i * .3, 120 - i * 1.5, 56, 60];
+      tracker.push(image([box]), pts);
+      if (i % 3 === 0) tracker.anchor([anchor(box, pts, 10, label),
+        { ...anchor([box[0] + 1, box[1] + 1, 54, 58], pts, 100 + i, label), confidence: .7 }], pts);
+      const snapshot = tracker.snapshot();
+      assert.equal(snapshot.detections.length, 1);
+      assert.ok(snapshot.entries[label] <= 1);
+    }
+    assert.equal(tracker.snapshot().entries[label], 1);
+  }
+});
+
+test("a tiny clipped car expands with one visual identity even when overlap IoU is low", () => {
+  const tracker = new MotionTracker(), clipped = [312, 160, 8, 40], full = [280, 143, 40, 55];
+  tracker.push(image([]), 0);
+  const [born] = tracker.anchor([{ ...anchor(clipped, 0, 1), sampleIntervalSec: .6 }], 0).detections;
+  tracker.push(image([]), .65);
+  const next = tracker.anchor([anchor(full, .65, 1)], .65);
+  assert.equal(next.detections.length, 1);
+  assert.equal(next.detections[0].trackId, born.trackId);
+  assert.deepEqual(next.detections[0].bbox, full);
+});
+
+test("negative model evidence retires a false pixel track at capture time and cannot erase a newer accepted anchor", () => {
+  const tracker = new MotionTracker(), box = [90, 110, 40, 65];
+  tracker.push(image([box]), 0);
+  tracker.anchor([anchor(box, 0, 10, "motor")], 0);
+  const moved = [88, 105, 40, 65];
+  tracker.push(image([moved]), .1);
+  assert.equal(tracker.anchor([], .1, [anchor(moved, .1, 10, "motor")]).detections.length, 0);
+  tracker.anchor([anchor(moved, .1, 11, "motor")], .1);
+  assert.equal(tracker.anchor([], 0, [anchor(box, 0, 10, "motor")]).detections.length, 1);
+});
+
 test("optical flow measures translation and perspective scale from pixels", () => {
   const box = [75, 65, 70, 48], next = [77.6, 66.2, 71.4, 48.96];
   const a = pyramid(image([box])), b = pyramid(image([next]));
