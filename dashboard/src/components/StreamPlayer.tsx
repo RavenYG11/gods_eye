@@ -50,10 +50,15 @@ function formatDvrClock(totalSec: number): string {
 }
 
 export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props) {
+<<<<<<< HEAD
   const { snap, attachVideo, retry, seekTo, resumePlayback, pausePlayback } = session;
   // #71: prebuffering = jeda INTERNAL mesin (bukan user) — chip waktu &
   // tombol play memperlakukannya sebagai "sedang jalan".
   const { status, metrics, paused, playback, prebuffering } = snap;
+=======
+  const { snap, attachVideo, retry, seekTo, resumePlayback } = session;
+  const { status, metrics, paused, playback } = snap;
+>>>>>>> 24d4d19e00c1e15bc33f1bb16a1404b872d3cb6e
   const playerRef = useRef<HTMLElement>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -232,9 +237,7 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
 
   // #69 — TAMPILAN WAKTU. Stream ini LIVE HLS (duration = Infinity) → tidak
   // ada "durasi" klasik. Yang ditampilkan: jarak posisi play dari live edge.
-  // #71: jeda internal prebuffer (prebuffering) BUKAN jeda user — chip tetap
-  // menampilkan offset waktu normal, bukan "DIJEDA".
-  const showPaused = paused && !prebuffering;
+  const showPaused = paused;
   const behindSec =
     playback.edge >= 0 ? Math.max(0, Math.round(playback.edge - playback.pos)) : -1;
   const timeText = showPaused
@@ -491,8 +494,8 @@ export function StreamPlayer({ session, camera, detection, videoSinkRef }: Props
           (DetectionPanel) — card video bersih: hanya video + DVR bar +
           kontrol play. */}
       {/* #69: tombol putar/jeda. Ikon mengikuti state video (event
-          play/pause, bukan tebakan); #71: jeda internal prebuffer
-          ditampilkan sebagai "sedang jalan" (showPaused). */}
+          play/pause, bukan tebakan). #76: mekanisme prebuffer #71 DIHAPUS —
+          tidak ada lagi "jeda internal". */}
       <button
         id="playBtn"
         type="button"

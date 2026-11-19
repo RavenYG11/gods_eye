@@ -50,15 +50,26 @@ workerSelf.onmessage = (e: MessageEvent<WorkerRequest>) => {
     // antrean). #68: dulu dibuang diam-diam (frame.close() tanpa respons) →
     // promise main thread menggantung sampai timeout → fps palsu. Kini worker
     // membalas "dropped" agar main thread langsung tahu ini BUKAN hasil.
+    // #76: id digemakan agar main thread mencocokkan dengan panggilan tepat.
     if (!ready || busy) {
       msg.frame.close();
+<<<<<<< HEAD
       post({ type: "dropped", requestId: msg.requestId });
+=======
+      post({ type: "dropped", id: msg.id });
+>>>>>>> 24d4d19e00c1e15bc33f1bb16a1404b872d3cb6e
       return;
     }
     busy = true;
     void handleDetect(msg).finally(() => {
       busy = false;
     });
+  }
+  if (msg.type === "reset-tracker") {
+    // #76: diskontinuitas timeline (seek) — buang semua track; track lama
+    // mereferensikan posisi/waktu timeline yang sudah tidak berlaku.
+    tracker.reset();
+    return;
   }
 };
 
@@ -122,7 +133,11 @@ async function handleDetect(
     const tracked = tracker.update(raw, framePts, { width: srcW, height: srcH });
     post({
       type: "result",
+<<<<<<< HEAD
       requestId: msg.requestId,
+=======
+      id: msg.id,
+>>>>>>> 24d4d19e00c1e15bc33f1bb16a1404b872d3cb6e
       frame: {
         cameraId,
         framePts,
@@ -135,8 +150,22 @@ async function handleDetect(
   } catch (err) {
     // inferFromBitmap melempar hanya bila model rusak/frame invalid —
     // kirim frame kosong agar overlay tidak macet di kotak lama.
+<<<<<<< HEAD
     post({ type: "detect-error", requestId: msg.requestId,
       message: err instanceof Error ? err.message : String(err) });
+=======
+    post({
+      type: "result",
+      id: msg.id,
+      frame: {
+        cameraId,
+        framePts,
+        wallTime: Date.now(),
+        detections: [],
+        inferMs: Math.round(performance.now() - t0),
+      },
+    });
+>>>>>>> 24d4d19e00c1e15bc33f1bb16a1404b872d3cb6e
   } finally {
     frame.close();
   }

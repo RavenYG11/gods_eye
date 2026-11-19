@@ -159,12 +159,50 @@ Playlist tidak disimpan di cache. Segmen yang sama memakai satu fetch bersama;
 cache hanya membantu request ulang atau beberapa viewer. Satu viewer yang
 mengunduh segmen baru tidak otomatis menjadi lebih cepat karena cache.
 
+<<<<<<< HEAD
 Fitur dataset (card, upload, paste, daftar, hapus, export, SQLite runtime,
 serta skrip trainer terkait) sudah dihapus. Endpoint lamanya mengembalikan 404.
 Database lama tetap tersimpan sebagai arsip dan tidak dibuka oleh backend.
 
 Environment backend: `PORT` (3000), `HOST` (127.0.0.1), `CCTV_UPSTREAM`
 (https://eofficev2.bekasikota.go.id).
+=======
+## Status verifikasi (jujur, 15 Okt 2026; #71: 16 Okt 2026; #76: 16 Okt 2026)
+
+**Model (jujur):** `yolo26n.onnx` = **YOLO26n pretrained resmi Ultralytics**
+(baseline; kelas COCO `car`→`mobil`, `motorcycle`→`motor`). **TIDAK ADA training
+yang pernah dijalankan** — gambar yang di-upload ke "Kelola Dataset" tersimpan
+sebagai seed/dataset, BUKAN dipakai melatih model. Pipeline training
+(`docs/training.md`, `#74`) adalah dokumentasi untuk KERJA MENDATANG, bukan
+yang sudah terjadi. Jangan klaim model "belajar dari gambar upload".
+
+- `npm run build` (`tsc -b` + `vite build`): **BERSIH, tanpa error** (hanya warning
+  chunk > 500 kB yang sudah dinyatakan harmless di QA #54). Berlaku juga
+  setelah #68 (Gunet, 15 Okt 2026 ~21:00 WIB) dan **#71 (Gunet, 16 Okt 2026:
+  `npx tsc -b --force` 0 error + `npm run build` sukses** — stream runtime
+  TIDAK bisa diuji di VM: upstream CCTV memblokir IP data center; checklist
+  uji laptop ada di bawah).
+- **Backend teruji lokal di VM:** `npm start` jalan tanpa error; `GET /` → `200`,
+  `GET /api/health` → `{"ok":true,…}`, path acak → `200` (SPA fallback),
+  `GET /cctv/…` → diteruskan ke proksi (hasil `500` dari VM = upstream memblokir
+  IP data center — **routing terbukti benar**, bukan 404).
+- **Stream `.m3u8` TIDAK terjangkau dari VM ini** (pola sama dengan temuan riset
+  CCTV Jakarta: server memblokir IP data center). **"Video tampil" WAJIB
+  diverifikasi Rama di laptop (jaringan rumah)** — checklist `docs/runbook.md` §7.
+- QA Testarossa #54: **LULUS DENGAN CATATAN** — laporan: `docs/qa-report-v0.1.md`.
+  Audit keamanan Cipher #53: lulus tanpa temuan kritis.
+- Runbook operasional (Epthal #55, direvisi Gunet #59): **`docs/runbook.md`**.
+- **#76 (Gunet, 16 Okt 2026): debug deteksi total — SELESAI & TERVERIFIKASI VM.**
+  Akar: bug fatal `workerDetector` (`finally` me-reset `inflight` milik panggilan
+  lain → semua hasil inferensi dibuang). Uji E2E headless Chromium + stream HLS
+  sintetis (crop seed asli): deteksi `ok=12/12`, `tracksMaks=3` (`mobil:2,
+  motor:1`), box mengunci (`motor 77% #3`, `mobil 90% #1`, `mobil 89% #2`);
+  video 31fps tanpa pause aplikasi; prebuffer #71 dihapus total. Uji Node
+  `dashboard/qa/` (`./run.sh`): 15/15 + regresi inflight lolos.
+  **BATAS: stream CCTV Bekasi asli tak terjangkau dari VM (WAF blokir IP
+  data center) → "video & tracking di stream ASLI" WAJIB verifikasi Rama di
+  laptop** (checklist `docs/runbook.md` §7).
+>>>>>>> 24d4d19e00c1e15bc33f1bb16a1404b872d3cb6e
 
 ## Development dan verifikasi
 

@@ -1,9 +1,35 @@
+<<<<<<< HEAD
 import type { Detection, Detector } from "./types";
 import { inferenceRegion, restoreRegion } from "./detectionRegions";
 import { onTargetRoad } from "./targetRoad";
 import { imageDataToNchw, letterboxParams, parseYolo26nOutput } from "./yolo26n";
 import { COCO_TO_VEHICLE, CONFIDENCE_THRESHOLD, MODEL_INPUT_SIZE,
   ORT_EXECUTION_PROVIDERS, ORT_NUM_THREADS } from "./vehicleConfig";
+=======
+// Implementasi kontrak Detector (detection/types.ts) dengan YOLO26n ONNX.
+// Rujukan fakta: riset #48 — input 640×640, output [1,300,6] NMS-free.
+//
+// File ini dirancang untuk jalan DI DALAM Web Worker (detection.worker.ts)
+// agar inferensi tidak memblokir video 60fps di main thread. Ia tidak memakai
+// `document` — hanya OffscreenCanvas (tersedia di worker & main thread).
+//
+// Thread WASM: ORT_NUM_THREADS (vehicleConfig) — butuh COOP/COEP (lihat
+// backend/server.js). Tanpa cross-origin isolation ORT otomatis turun ke
+// 1 thread; deteksi tetap jalan, hanya lebih lambat.
+
+import type { Detection, Detector, DetectOutcome } from "./types";
+import {
+  imageDataToNchw,
+  letterboxParams,
+  parseYolo26nOutput,
+} from "./yolo26n";
+import {
+  CONFIDENCE_THRESHOLD,
+  MODEL_INPUT_SIZE,
+  ORT_EXECUTION_PROVIDERS,
+  ORT_NUM_THREADS,
+} from "./vehicleConfig";
+>>>>>>> 24d4d19e00c1e15bc33f1bb16a1404b872d3cb6e
 
 type OrtModule = typeof import("onnxruntime-web");
 type Tensor = import("onnxruntime-web").Tensor;
@@ -123,6 +149,7 @@ export class OnnxVehicleDetector implements Detector {
     // Match Ultralytics padding; black padding changes the input distribution.
     ctx.fillStyle = "rgb(114,114,114)";
     ctx.fillRect(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
+<<<<<<< HEAD
     ctx.drawImage(bitmap, region.x, region.y, region.width, region.height,
       lb.padX, lb.padY, region.width * lb.scale, region.height * lb.scale);
     imageDataToNchw(ctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE), this.pixels);
@@ -135,6 +162,66 @@ export class OnnxVehicleDetector implements Detector {
       }), region).filter((det) => onTargetRoad(det.bbox, srcW, srcH));
     } finally {
       Object.values(outputs).forEach((tensor) => tensor.dispose());
+=======
+    ctx.drawImage(bitmap, lb.padX, lb.padY, srcW * lb.scale, srcH * lb.scale);
+
+    const img = ctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
+    const input = new this.ort.Tensor(
+      "float32",
+      imageDataToNchw(img),
+      [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE],
+    );
+    const t0 = performance.now();
+    const results = await this.session.run({ [this.inputName]: input });
+    const inferMs = performance.now() - t0;
+
+    const outTensor = results[this.outputName];
+    const data = outTensor.data as ArrayLike<number>;
+    void inferMs; // dicatat pemanggil bila perlu; bukan bagian kontrak
+    return parseYolo26nOutput(data, {
+      srcW,
+      srcH,
+      lb,
+      timestamp,
+      confidenceThreshold: this.threshold, // #65: ambang live dari slider
+    });
+  }
+
+  /**
+   * Kontrak Detector.detect — TIDAK boleh melempar saat stream jalan.
+   * Dipakai bila detector dijalankan di main thread (bukan jalur utama #60).
+   * #76: kontrak kini DetectOutcome (bukan Detection[] polos).
+   */
+  async detect(frame: ImageData | HTMLVideoElement): Promise<DetectOutcome> {
+    try {
+      if (!this.session) {
+        return {
+          detections: [],
+          skipped: true,
+          timedOut: false,
+          inferMs: null,
+          generation: 0,
+        };
+      }
+      // Jalur utama #60 memakai inferFromBitmap via worker; detect() di sini
+      // hanya untuk kompatibilitas kontrak.
+      void frame;
+      return {
+        detections: [],
+        skipped: true,
+        timedOut: false,
+        inferMs: null,
+        generation: 0,
+      };
+    } catch {
+      return {
+        detections: [],
+        skipped: true,
+        timedOut: false,
+        inferMs: null,
+        generation: 0,
+      };
+>>>>>>> 24d4d19e00c1e15bc33f1bb16a1404b872d3cb6e
     }
   }
 
